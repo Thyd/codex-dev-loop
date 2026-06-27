@@ -1,0 +1,10 @@
+.codex/
+__pycache__/
+*.py[cod]
+*.log
+.DS_Store
+.venv/
+venv/
+node_modules/
+dist/
+build/

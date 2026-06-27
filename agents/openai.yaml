@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex Dev Loop"
+  short_description: "Automate design review, coding, tests, quality gates, and PRs"
+  default_prompt: "Use $codex-dev-loop to turn a Notion page or Markdown spec into reviewed code, tests, quality gates, commit, and PR."
