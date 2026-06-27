@@ -14,21 +14,10 @@
 
 ![微信支付二维码](../assets/wechat-pay-qr.jpg)
 
-### Bitcoin
-
-Bitcoin 钱包地址：
-
-```text
-1McdTGrMLqCpfqU7SBdy9HZTy5sFARhgTE
-```
-
-也可以扫描下方二维码：
-
-![Bitcoin wallet QR](../assets/bitcoin-wallet-qr.jpg)
-
 ### 说明
 
 - 赞助是自愿支持，不代表购买无 bug 保证。
+- 为降低合规风险，本项目不接受虚拟货币赞助。
 - 如需私有仓库适配、CI 配置或企业工作流定制，请另行联系维护者或提交 issue。
 - 本项目不隶属于 OpenAI，也未获得 OpenAI 赞助、背书或认可。
 
@@ -44,20 +33,9 @@ Scan the QR code below with WeChat Pay:
 
 ![WeChat Pay QR](../assets/wechat-pay-qr.jpg)
 
-### Bitcoin
-
-Bitcoin wallet address:
-
-```text
-1McdTGrMLqCpfqU7SBdy9HZTy5sFARhgTE
-```
-
-You can also scan the QR code below:
-
-![Bitcoin wallet QR](../assets/bitcoin-wallet-qr.jpg)
-
 ### Notes
 
 - Sponsorship is voluntary and does not purchase a guarantee of bug-free output.
+- To reduce compliance risk, this project does not accept cryptocurrency sponsorships.
 - For private repository adaptation, CI setup, or enterprise workflow customization, open an issue or contact the maintainer separately.
 - This project is not affiliated with, sponsored by, or endorsed by OpenAI.

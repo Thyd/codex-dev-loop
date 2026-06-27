@@ -46,7 +46,6 @@ codex-dev-loop/
   docs/sponsor.md
   assets/
     wechat-pay-qr.jpg
-    bitcoin-wallet-qr.jpg
 ```
 
 ### 安装方式
@@ -207,7 +206,7 @@ loop 可能需要：
 
 查看：[赞助本项目](docs/sponsor.md)。
 
-`assets/wechat-pay-qr.jpg` 和 `assets/bitcoin-wallet-qr.jpg` 是维护者提供的赞助收款资产，不在 MIT License 复用范围内。
+`assets/wechat-pay-qr.jpg` 是维护者提供的赞助收款资产，不在 MIT License 复用范围内。
 
 ### 许可证
 
@@ -257,7 +256,6 @@ codex-dev-loop/
   docs/sponsor.md
   assets/
     wechat-pay-qr.jpg
-    bitcoin-wallet-qr.jpg
 ```
 
 ### Installation
@@ -418,7 +416,7 @@ If this skill helps your workflow, sponsorship supports maintenance, examples, d
 
 See [Sponsor this project](docs/sponsor.md).
 
-The WeChat Pay QR image in `assets/wechat-pay-qr.jpg` and the Bitcoin wallet QR image in `assets/bitcoin-wallet-qr.jpg` are maintainer-provided sponsorship assets. They are not licensed for reuse outside displaying sponsorship information for this repository.
+The WeChat Pay QR image in `assets/wechat-pay-qr.jpg` is a maintainer-provided sponsorship asset. It is not licensed for reuse outside displaying sponsorship information for this repository.
 
 ### License
 
