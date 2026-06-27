@@ -183,13 +183,17 @@ def init_git_repo(workspace: Path, branch: str = "codex/test") -> None:
     must(["git", "checkout", "-b", branch], workspace)
 
 
-def init_loop(harness: Path, tmp: Path) -> tuple[Path, Path]:
+def init_loop(harness: Path, tmp: Path, config_path: Path | None = None) -> tuple[Path, Path]:
     workspace = tmp / "repo"
     workspace.mkdir()
     init_git_repo(workspace)
     root = workspace / ".codex" / "dev-loop"
     source = write_source(tmp)
-    result = run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "init", "--source", str(source)])
+    command = [sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root)]
+    if config_path:
+        command.extend(["--config", str(config_path)])
+    command.extend(["init", "--source", str(source)])
+    result = run(command)
     if result.returncode != 0:
         print(result.stdout)
         raise SystemExit("Expected harness init to pass.")
@@ -360,8 +364,23 @@ def write_fake_codex_home(tmp: Path) -> tuple[Path, Path]:
 
 
 def main() -> int:
+    configurator = Path(__file__).with_name("configure_dev_loop.py").resolve()
     validator = Path(__file__).with_name("validate_dev_loop_artifacts.py").resolve()
     harness = Path(__file__).with_name("dev_loop_harness.py").resolve()
+    with tempfile.TemporaryDirectory(prefix="codex-dev-loop-config-test-") as raw_tmp:
+        tmp = Path(raw_tmp)
+        config_path = tmp / "codex-dev-loop.json"
+        configured = run([sys.executable, str(configurator), "--non-interactive", "--output", str(config_path)])
+        if configured.returncode != 0:
+            print(configured.stdout)
+            print("Expected configure_dev_loop.py to write default config.")
+            return 1
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+        if data.get("automation_level") != "pr_without_merge" or data.get("quality_profile") != "standard" or data.get("test_failure_limit") != 3:
+            print(json.dumps(data, indent=2, ensure_ascii=False))
+            print("Expected default first-run config values.")
+            return 1
+
     with tempfile.TemporaryDirectory(prefix="codex-dev-loop-self-test-") as raw_tmp:
         tmp = Path(raw_tmp)
         root = tmp / ".codex" / "dev-loop"
@@ -434,6 +453,30 @@ def main() -> int:
         if stale_plan.returncode == 0:
             print(stale_plan.stdout)
             print("Expected changed planning artifact to stale the plan review.")
+            return 1
+
+    with tempfile.TemporaryDirectory(prefix="codex-dev-loop-planning-only-test-") as raw_tmp:
+        tmp = Path(raw_tmp)
+        config_path = tmp / "planning-only.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "automation_level": "planning_only",
+                    "source_types": ["markdown", "notion"],
+                    "quality_profile": "standard",
+                    "test_failure_limit": 3,
+                    "risk_mode": "stop_and_ask",
+                }
+            ),
+            encoding="utf-8",
+        )
+        workspace, root = init_loop(harness, tmp, config_path=config_path)
+        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "plan_review"])
+        record_plan_review(harness, workspace, root, tmp)
+        blocked_by_config = run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "branch"])
+        if blocked_by_config.returncode == 0:
+            print(blocked_by_config.stdout)
+            print("Expected planning_only automation config to block branch phase.")
             return 1
 
     with tempfile.TemporaryDirectory(prefix="codex-dev-loop-failures-test-") as raw_tmp:

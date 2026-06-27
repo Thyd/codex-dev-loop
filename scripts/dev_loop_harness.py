@@ -40,8 +40,42 @@ REQUIRED_CLOUD_CHECKS = ["ai-quality-gate", "semgrep", "codeql", "sonar", "qodan
 AI_REVIEW_CHECK_ALIASES = ["qodo", "coderabbit", "pr-agent", "ai-review"]
 REQUIRED_QUALITY_GATES = ["lint", "typecheck", "test", "semgrep", "codeql", "sonar", "qodana", "subagent-alignment"]
 DEFAULT_CODEX_HOME = Path.home() / ".codex"
+DEFAULT_CONFIG_PATH = DEFAULT_CODEX_HOME / "config" / "codex-dev-loop.json"
 DEFAULT_TEST_GATE_SCRIPT = DEFAULT_CODEX_HOME / "skills" / "automated-dev-executor" / "scripts" / "test_gate.py"
 DEFAULT_QUALITY_GATE_SCRIPT = DEFAULT_CODEX_HOME / "skills" / "ai-code-quality-gate" / "scripts" / "quality_gate.py"
+CONFIG_SCHEMA_VERSION = 1
+DEFAULT_CONFIG = {
+    "schema_version": CONFIG_SCHEMA_VERSION,
+    "automation_level": "pr_without_merge",
+    "source_types": ["markdown", "notion"],
+    "quality_profile": "standard",
+    "test_failure_limit": 3,
+    "risk_mode": "stop_and_ask",
+}
+QUALITY_PROFILES = {
+    "light": {
+        "quality_gates": ["test", "subagent-alignment"],
+        "cloud_checks": ["ai-quality-gate"],
+        "require_ai_review": False,
+        "strict": False,
+    },
+    "standard": {
+        "quality_gates": ["lint", "typecheck", "test", "subagent-alignment"],
+        "cloud_checks": ["ai-quality-gate"],
+        "require_ai_review": True,
+        "strict": False,
+    },
+    "strict": {
+        "quality_gates": ["lint", "typecheck", "test", "semgrep", "codeql", "sonar", "qodana", "subagent-alignment"],
+        "cloud_checks": ["ai-quality-gate", "semgrep", "codeql", "sonar", "qodana", "subagent-alignment"],
+        "require_ai_review": True,
+        "strict": True,
+    },
+}
+AUTOMATION_LEVELS = {"pr_without_merge", "commit_only", "planning_only"}
+QUALITY_PROFILE_NAMES = set(QUALITY_PROFILES)
+RISK_MODES = {"stop_and_ask", "serious_only", "best_effort"}
+SOURCE_TYPES = {"markdown", "notion"}
 REVIEW_SECTIONS = {
     "plan-reviewer": ["Findings:", "Required Revisions:", "Blocking Questions:", "Rationale:"],
     "implementation-reviewer": [
@@ -87,6 +121,78 @@ TEMPLATES = {
 
 def now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat()
+
+
+def split_csv(value: str) -> list[str]:
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def default_config() -> dict:
+    return json.loads(json.dumps(DEFAULT_CONFIG))
+
+
+def normalize_config(raw: object) -> dict:
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise SystemExit("codex-dev-loop config must be a JSON object.")
+    config = default_config()
+    config.update(raw)
+
+    if config.get("automation_level") not in AUTOMATION_LEVELS:
+        raise SystemExit(f"Invalid automation_level in codex-dev-loop config: {config.get('automation_level')!r}")
+    if config.get("quality_profile") not in QUALITY_PROFILE_NAMES:
+        raise SystemExit(f"Invalid quality_profile in codex-dev-loop config: {config.get('quality_profile')!r}")
+    if config.get("risk_mode") not in RISK_MODES:
+        raise SystemExit(f"Invalid risk_mode in codex-dev-loop config: {config.get('risk_mode')!r}")
+    if not isinstance(config.get("source_types"), list) or not config["source_types"]:
+        raise SystemExit("source_types in codex-dev-loop config must be a non-empty list.")
+    invalid_source_types = sorted(set(config["source_types"]) - SOURCE_TYPES)
+    if invalid_source_types:
+        raise SystemExit("Invalid source_types in codex-dev-loop config: " + ", ".join(invalid_source_types))
+    try:
+        test_failure_limit = int(config.get("test_failure_limit"))
+    except (TypeError, ValueError) as exc:
+        raise SystemExit("test_failure_limit in codex-dev-loop config must be an integer.") from exc
+    if test_failure_limit not in {0, 1, 2, 3}:
+        raise SystemExit("test_failure_limit in codex-dev-loop config must be one of 0, 1, 2, or 3.")
+    config["test_failure_limit"] = test_failure_limit
+    config["schema_version"] = CONFIG_SCHEMA_VERSION
+    return config
+
+
+def load_loop_config(config_path: str = "") -> dict:
+    path_text = config_path or os.environ.get("CODEX_DEV_LOOP_CONFIG", "")
+    path = Path(path_text).expanduser() if path_text else DEFAULT_CONFIG_PATH
+    if not path.exists():
+        config = default_config()
+        config["path"] = str(path)
+        config["configured"] = False
+        return config
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"codex-dev-loop config is invalid JSON: {path}: {exc}") from exc
+    config = normalize_config(data)
+    config["path"] = str(path)
+    config["configured"] = True
+    return config
+
+
+def loop_config(state: dict) -> dict:
+    return normalize_config(state.get("config", {}))
+
+
+def quality_profile(state: dict) -> dict:
+    return QUALITY_PROFILES[loop_config(state)["quality_profile"]]
+
+
+def assert_config_allows_phase(state: dict, target: str) -> None:
+    automation_level = loop_config(state)["automation_level"]
+    if automation_level == "planning_only" and PHASE_INDEX[target] > PHASE_INDEX["plan_review"]:
+        raise SystemExit("Configured automation_level=planning_only blocks implementation, git, PR, and cloud-check phases.")
+    if automation_level == "commit_only" and PHASE_INDEX[target] >= PHASE_INDEX["pr"]:
+        raise SystemExit("Configured automation_level=commit_only blocks PR and cloud-check phases.")
 
 
 def read_state(root: Path) -> dict:
@@ -550,7 +656,7 @@ def parse_quality_decision(summary: Path) -> str:
     raise SystemExit("Quality summary is missing a Decision line.")
 
 
-def validate_quality_results(results_path: Path, require_passed: bool = True) -> list[dict]:
+def validate_quality_results(results_path: Path, required_gates: list[str], require_passed: bool = True) -> list[dict]:
     if not results_path.exists():
         raise SystemExit(f"Quality gate results JSON does not exist: {results_path}")
     try:
@@ -565,11 +671,11 @@ def validate_quality_results(results_path: Path, require_passed: bool = True) ->
             raise SystemExit("Quality gate results JSON contains invalid gate records.")
         by_gate[str(item["gate"])] = item
     if require_passed:
-        missing = [gate for gate in REQUIRED_QUALITY_GATES if gate not in by_gate]
+        missing = [gate for gate in required_gates if gate not in by_gate]
         if missing:
             raise SystemExit("Quality gate results are missing required gates: " + ", ".join(missing))
         failed: list[str] = []
-        for gate in REQUIRED_QUALITY_GATES:
+        for gate in required_gates:
             item = by_gate[gate]
             if item.get("status") != "passed" or item.get("exit_code") != 0:
                 failed.append(f"{gate}={item.get('status')}/{item.get('exit_code')}")
@@ -621,7 +727,7 @@ def validate_pr_evidence(data: object, branch: str, commit: str, pr_url: str) ->
     return data
 
 
-def validate_cloud_evidence(data: object, required_checks: list[str]) -> list[dict]:
+def validate_cloud_evidence(data: object, required_checks: list[str], require_ai_review: bool = True) -> list[dict]:
     if not isinstance(data, list):
         raise SystemExit("GitHub Actions evidence must be a JSON list.")
     checks: list[dict] = []
@@ -637,7 +743,7 @@ def validate_cloud_evidence(data: object, required_checks: list[str]) -> list[di
     missing = [check for check in required_checks if not any(check.lower() in name for name in names)]
     if missing:
         raise SystemExit("GitHub Actions evidence is missing required checks: " + ", ".join(missing))
-    if not any(any(alias in name for alias in AI_REVIEW_CHECK_ALIASES) for name in names):
+    if require_ai_review and not any(any(alias in name for alias in AI_REVIEW_CHECK_ALIASES) for name in names):
         raise SystemExit("GitHub Actions evidence must include Qodo PR-Agent, CodeRabbit, or another AI review check.")
     failing = [item["name"] for item in checks if not passing_state(str(item.get("state") or ""))]
     if failing:
@@ -670,6 +776,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         "phase": "planning",
         "created_at": now(),
         "updated_at": now(),
+        "config": load_loop_config(args.config),
         "source": str(source) if source else "",
         "source_fingerprint": sha256_bytes((root / "source.md").read_bytes()),
         "reviews": {},
@@ -690,6 +797,7 @@ def cmd_set_phase(args: argparse.Namespace) -> int:
     root = Path(args.root)
     workspace = Path(args.workspace).resolve()
     state = read_state(root)
+    assert_config_allows_phase(state, args.phase)
     assert_transition(root, state, args.phase, workspace)
     if PHASE_INDEX[args.phase] < PHASE_INDEX[phase(state)]:
         clear_downstream_state(state, args.phase)
@@ -771,10 +879,12 @@ def record_test_meta(root: Path, workspace: Path, state: dict, unit: str, meta_p
     }
     attempts.append(record)
     failed_count = sum(1 for item in attempts if item.get("status") != "passed")
-    if failed_count >= 3 and meta["status"] != "passed":
-        add_blocker(state, f"{unit} test gate failed 3 times")
+    configured_limit = loop_config(state)["test_failure_limit"]
+    stop_after = 1 if configured_limit == 0 else configured_limit
+    if failed_count >= stop_after and meta["status"] != "passed":
+        add_blocker(state, f"{unit} test gate failed {failed_count} time(s); configured limit is {configured_limit}")
         write_state(root, state)
-        print(f"{unit}: failed 3 times")
+        print(f"{unit}: failed {failed_count} time(s)")
         return 1
     write_state(root, state)
     print(f"{unit}: {meta['status']} attempt {len(attempts)}")
@@ -818,6 +928,8 @@ def record_quality_result(
     command: list[str],
     exit_code: int,
     stdout: str,
+    required_gates: list[str],
+    profile_name: str,
 ) -> int:
     if exit_code != 0:
         stdout_dest = root / "quality-gate-stdout.log"
@@ -837,7 +949,7 @@ def record_quality_result(
         raise SystemExit(f"Quality summary does not exist: {summary}")
     decision = parse_quality_decision(summary)
     required_gates_passed = decision in {"pass", "needs-human-review"}
-    validate_quality_results(results, require_passed=required_gates_passed)
+    validate_quality_results(results, required_gates, require_passed=required_gates_passed)
     dest = root / "quality-gate-summary.md"
     copy_report(summary, dest)
     results_dest = root / "quality-gate-results.json"
@@ -854,6 +966,8 @@ def record_quality_result(
         "exit_code": exit_code,
         "decision": decision,
         "status": status,
+        "quality_profile": profile_name,
+        "required_gates": required_gates,
         "plan_fingerprint": fingerprints["plan"],
         "workspace_fingerprint": fingerprints["workspace"],
         "summary_fingerprint": sha256_bytes(dest.read_bytes()),
@@ -878,6 +992,9 @@ def cmd_run_quality(args: argparse.Namespace) -> int:
     script = DEFAULT_QUALITY_GATE_SCRIPT
     if not script.exists():
         raise SystemExit(f"Quality gate script does not exist: {script}")
+    profile_name = loop_config(state)["quality_profile"]
+    profile = quality_profile(state)
+    required_gates = split_csv(args.require) if args.require else list(profile["quality_gates"])
     out_dir = Path(args.out_dir) if args.out_dir else workspace / ".codex" / "quality-gate" / dt.datetime.now().strftime("%Y%m%d-%H%M%S-dev-loop")
     if out_dir.exists():
         raise SystemExit(f"Quality gate out-dir already exists; refusing to reuse stale artifacts: {out_dir}")
@@ -891,14 +1008,15 @@ def cmd_run_quality(args: argparse.Namespace) -> int:
         str(workspace),
         "--out-dir",
         str(out_dir),
-        "--strict",
         "--alignment-report",
         str(alignment_report),
         "--timeout",
         str(args.timeout),
     ]
-    if args.require:
-        command.extend(["--require", args.require])
+    if profile.get("strict"):
+        command.append("--strict")
+    if required_gates:
+        command.extend(["--require", ",".join(required_gates)])
     if args.pr_url:
         command.extend(["--pr-url", args.pr_url])
     for item in args.command:
@@ -907,7 +1025,7 @@ def cmd_run_quality(args: argparse.Namespace) -> int:
     print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
     summary = out_dir / "summary.md"
     results = out_dir / "results.json"
-    return record_quality_result(root, workspace, state, summary, results, command, result.returncode, result.stdout)
+    return record_quality_result(root, workspace, state, summary, results, command, result.returncode, result.stdout, required_gates, profile_name)
 
 
 def cmd_record_branch(args: argparse.Namespace) -> int:
@@ -984,7 +1102,8 @@ def cmd_record_cloud(args: argparse.Namespace) -> int:
     state = read_state(root)
     assert_phase(state, {"cloud_checks"})
     assert_phase_prereqs(root, state, "cloud_checks", workspace)
-    required_checks = [*REQUIRED_CLOUD_CHECKS, *args.extra_required_check]
+    profile = quality_profile(state)
+    required_checks = [*profile["cloud_checks"], *args.extra_required_check]
     if args.allow_local_simulation:
         if not args.evidence:
             raise SystemExit("--evidence is required with --allow-local-simulation.")
@@ -994,7 +1113,7 @@ def cmd_record_cloud(args: argparse.Namespace) -> int:
         if not pr_url:
             raise SystemExit("Missing recorded PR URL for GitHub Actions checks.")
         cloud_data = run_gh_json(workspace, args.gh, ["pr", "checks", pr_url, "--json", "name,state,link"])
-    checks = validate_cloud_evidence(cloud_data, required_checks) if args.status == "passed" else []
+    checks = validate_cloud_evidence(cloud_data, required_checks, require_ai_review=bool(profile["require_ai_review"])) if args.status == "passed" else []
     evidence_dest = root / "github-actions-evidence.json"
     evidence_dest.write_text(json.dumps(cloud_data, indent=2), encoding="utf-8")
     fingerprints = evidence_fingerprint(root, workspace)
@@ -1003,6 +1122,8 @@ def cmd_record_cloud(args: argparse.Namespace) -> int:
         "evidence": str(evidence_dest),
         "checks": checks,
         "required_checks": required_checks,
+        "quality_profile": loop_config(state)["quality_profile"],
+        "require_ai_review": bool(profile["require_ai_review"]),
         "plan_fingerprint": fingerprints["plan"],
         "workspace_fingerprint": fingerprints["workspace"],
         "recorded_at": now(),
@@ -1060,6 +1181,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Codex dev loop state helper.")
     parser.add_argument("--root", default=".codex/dev-loop")
     parser.add_argument("--workspace", default=".")
+    parser.add_argument("--config", default=os.environ.get("CODEX_DEV_LOOP_CONFIG", ""), help="Path to codex-dev-loop config JSON.")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     init = sub.add_parser("init")

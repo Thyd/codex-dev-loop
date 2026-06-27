@@ -5,18 +5,21 @@ description: Run an end-to-end Codex autonomous development loop from a Notion p
 
 # Codex Dev Loop
 
+Current version: 0.2.0
+
 ## Operating Contract
 
 Use this skill to drive a full local Codex harness plus GitHub Actions loop.
 
+- Load first-run preferences from `~/.codex/config/codex-dev-loop.json` when present; otherwise use the default profile.
 - Accept inputs from a Notion page or local Markdown spec.
 - Start when the input has a goal and acceptance criteria.
 - Produce technical design, file scope, test plan, risk analysis, and development plan before coding.
 - Run Subagent review loops until planning artifacts pass.
 - Implement one independently testable unit at a time.
-- Force tests through a hook or explicit gate, with a maximum of 3 attempts per failing gate.
-- Require `$ai-code-quality-gate` before commit.
-- Create a new git branch, commit changes, push, and open a PR.
+- Force tests through a hook or explicit gate, stopping at the configured failure limit.
+- Require `$ai-code-quality-gate` before commit, using the configured quality profile.
+- Create a new git branch, commit changes, push, and open a PR unless the configured automation level stops earlier.
 - Inspect GitHub Actions required checks after opening the PR when GitHub access is available.
 - Write execution records, review reports, quality summaries, and PR description artifacts.
 - Stop instead of guessing when requirements are unclear, architecture risk appears, external tokens are needed, or quality gates fail.
@@ -24,14 +27,55 @@ Use this skill to drive a full local Codex harness plus GitHub Actions loop.
 ## Required Skills And Tools
 
 - Use `$automated-dev-executor` for unit-by-unit implementation and forced test gates.
-- Use `$ai-code-quality-gate` for lint, typecheck, test, Semgrep, CodeQL, Sonar, Qodana, Subagent alignment, and AI PR review gates.
+- Use `$ai-code-quality-gate` for the configured lint, typecheck, test, Semgrep, CodeQL, Sonar, Qodana, Subagent alignment, and AI PR review gates.
 - Use `scripts/dev_loop_harness.py` as the local state ledger for phases, reviews, test attempts, quality gate, and PR records.
+- Use `scripts/configure_dev_loop.py` to create or update first-run preferences.
 - Use `multi_agent_v1` Subagents. If Subagents are unavailable, stop before planning review:
   - `plan-reviewer`
   - `implementation-reviewer`
   - `risk-reviewer`
 - Use GitHub tooling or `gh` for pushing branches and opening PRs.
 - Use Notion tools only when the input is a Notion page and the user has provided access.
+
+## First-Run Configuration
+
+Before the first full run, check whether this file exists:
+
+```text
+~/.codex/config/codex-dev-loop.json
+```
+
+If it is missing, ask the user to answer only these five setup questions, or run:
+
+```bash
+python <skill-dir>/scripts/configure_dev_loop.py
+```
+
+The five questions are:
+
+1. Automation level: `pr_without_merge` (default), `commit_only`, or `planning_only`.
+2. Source types: `markdown + notion` (default), `markdown`, or `notion`.
+3. Quality profile: `standard` (default), `strict`, or `light`.
+4. Test failure limit: `3` (default), `2`, `1`, or `0` for stop on first failure.
+5. Risk mode: `stop_and_ask` (default), `serious_only`, or `best_effort`.
+
+After saving configuration, respond with a concise confirmation such as:
+
+```text
+Automation scope is currently set to "Stop after PR creation"; tell me anytime if you want to adjust automation scope, source types, quality strictness, test retry count, or risk handling.
+```
+
+Default behavior when no config exists:
+
+```json
+{
+  "automation_level": "pr_without_merge",
+  "source_types": ["markdown", "notion"],
+  "quality_profile": "standard",
+  "test_failure_limit": 3,
+  "risk_mode": "stop_and_ask"
+}
+```
 
 ## Loop Overview
 
@@ -153,10 +197,10 @@ Use `$automated-dev-executor` for implementation:
 
 - Work on exactly one unit from `.codex/dev-loop/development-plan.md`.
 - Run the unit's forced test gate.
-- Retry a failing test gate at most 3 times.
+- Retry a failing test gate only up to the configured failure limit.
 - Run and record every attempt with `scripts/dev_loop_harness.py run-test --unit <unit-id> --command "<test command>"`.
 - Do not advance beyond implementation until every `## Unit dev-*` in the development plan has latest test status `passed`.
-- After 3 failures, stop with a blocker.
+- After the configured failure limit is reached, stop with a blocker.
 - Record command, result, timestamp, and log path.
 - Do not skip tests or mark a failing unit complete.
 
@@ -165,7 +209,7 @@ Use `$automated-dev-executor` for implementation:
 After all implementation units pass:
 
 1. Save Subagent alignment output to `.codex/quality-gate/subagent-alignment.md`.
-2. Run `$ai-code-quality-gate` with required gates.
+2. Run `$ai-code-quality-gate` with required gates from the configured quality profile.
 3. Run and record the result with `scripts/dev_loop_harness.py run-quality`.
 4. If a required scanner needs a local dependency or CLI install, install it only when it is required by the repo's configured gate.
 5. If a scanner needs remote credentials or a hosted service that is not already configured, stop and ask the user.
@@ -182,11 +226,11 @@ The harness runs the equivalent quality gate command:
 ```bash
 python ~/.codex/skills/ai-code-quality-gate/scripts/quality_gate.py \
   --workspace . \
-  --strict \
+  --require <configured-gates> \
   --alignment-report .codex/quality-gate/subagent-alignment.md
 ```
 
-The harness requires real `$ai-code-quality-gate` output and verifies that lint, typecheck, test, Semgrep, CodeQL, Sonar, Qodana, and Subagent alignment all pass. PR-level AI review is enforced later in the cloud check stage.
+For `strict` profile the harness also passes `--strict`. The harness requires real `$ai-code-quality-gate` output and verifies that all gates required by the configured profile pass. PR-level AI review is enforced later in the cloud check stage for standard and strict profiles.
 
 ## External Service Policy
 
@@ -263,7 +307,7 @@ Stop and report a blocker when:
 
 - Requirements are unclear.
 - Plan review returns `block`.
-- Test gate fails 3 times for the same unit.
+- Test gate reaches the configured failure limit for the same unit.
 - `$ai-code-quality-gate` fails.
 - Subagent alignment returns anything other than `Decision: pass`.
 - Risk review finds architecture, security, data, migration, compatibility, or external-service risk that needs a user decision.

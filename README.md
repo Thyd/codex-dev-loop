@@ -1,6 +1,7 @@
 # Codex Dev Loop · 从需求到 PR 的自动开发 loop
 
 ![Skill](https://img.shields.io/badge/Skill-Codex-111111?style=flat-square)
+![Version](https://img.shields.io/badge/Version-v0.2.0-blue?style=flat-square)
 ![Quality Gate](https://img.shields.io/badge/Quality%20Gate-required-0A7CFF?style=flat-square)
 ![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-supported-2088FF?style=flat-square)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
@@ -15,7 +16,7 @@
 
 它做的事很直接：给它一份 Notion 页面或 Markdown 需求，它会先补齐技术方案、测试计划、风险分析和开发计划；这些东西通过 Subagent 评审后，才开始写代码；写完后必须跑测试、质量门、云端检查和 PR 级 review，最后再提交代码和创建 PR。
 
-它的目标不是“让 AI 更敢写代码”，而是让 AI 写完代码后有足够多的刹车。
+目标很明确：让 Codex 自动推进开发，同时让测试、评审、质量门和 PR 检查持续拦住风险。
 
 ### 30 秒开始
 
@@ -29,6 +30,12 @@ git clone https://github.com/Thyd/codex-dev-loop.git "$env:USERPROFILE\.codex\sk
 
 ```powershell
 git -C "$env:USERPROFILE\.codex\skills\codex-dev-loop" pull
+```
+
+初次使用前，运行 5 问配置：
+
+```powershell
+python "$env:USERPROFILE\.codex\skills\codex-dev-loop\scripts\configure_dev_loop.py"
 ```
 
 安装后重启 Codex，然后把下面这段话发给 Codex：
@@ -60,11 +67,11 @@ git -C "$env:USERPROFILE\.codex\skills\codex-dev-loop" pull
 
 不适合：
 
-- 只有一句模糊想法，没有目标和验收标准。
-- 不允许 Codex 读写文件、运行命令或操作 git。
-- 没有测试，也不准备补测试的仓库。
-- 需要直接改生产环境、数据库或线上配置的任务。
-- 需要绕过质量门、强行合并或“先上再说”的任务。
+- 只有一句模糊想法，没有目标和验收标准。建议先补一版 `Goal` 和 `Acceptance Criteria`，再启动 loop。
+- 不允许 Codex 读写文件、运行命令或操作 git。建议先使用“只做规划”模式，等方案确认后再开放执行权限。
+- 没有测试，也不准备补测试的仓库。建议先补最小 smoke test 或关键路径测试，否则自动开发没有可靠刹车。
+- 需要直接改生产环境、数据库或线上配置的任务。建议拆成设计评审和人工执行两步，先让 loop 输出风险和迁移方案。
+- 需要绕过质量门、强行合并或“先上再说”的任务。建议降低任务范围或调整质量门配置，不建议关闭所有 gate。
 
 ### 它会帮你做什么
 
@@ -74,8 +81,8 @@ git -C "$env:USERPROFILE\.codex\skills\codex-dev-loop" pull
 | 方案补齐 | 生成技术方案、文件范围、测试计划、风险分析、开发计划 | 发现架构风险就停止 |
 | Subagent 评审 | 让 plan / implementation / risk 三类 reviewer 交叉检查 | 评审不通过就修改后重审 |
 | 自动开发 | 按可独立测试的单元逐步实现 | 不跳步 |
-| 测试门 | 每个单元都要跑测试，最多失败 3 次 | 连续失败 3 次就停止 |
-| 本地质量门 | 强制调用 `ai-code-quality-gate` | 质量门失败就停止 |
+| 测试门 | 每个单元都要跑测试，失败次数按初始配置控制 | 达到配置阈值就停止 |
+| 本地质量门 | 强制调用 `ai-code-quality-gate`，严格度按初始配置控制 | 质量门失败就停止 |
 | PR 阶段 | 创建分支、提交、推送、开 PR | 缺权限或 token 就停止 |
 | 云端检查 | 检查 GitHub Actions、PR review、Qodo PR-Agent 或 CodeRabbit | 检查失败或缺失就停止 |
 
@@ -150,6 +157,36 @@ git -C "$env:USERPROFILE\.codex\skills\codex-dev-loop" pull
 
 安装后重启 Codex，让 Codex 重新发现 skill。
 
+### 初次配置
+
+首次使用前，建议运行一次配置向导：
+
+```powershell
+python "$env:USERPROFILE\.codex\skills\codex-dev-loop\scripts\configure_dev_loop.py"
+```
+
+它只问 5 个问题：
+
+| 问题 | 默认值 | 影响 |
+|---|---|---|
+| 你希望自动化到哪一步？ | 创建 PR 后停止 | 决定是否只规划、只提交，还是开 PR 后停止 |
+| 需求来源主要是什么？ | Markdown + Notion | 决定允许从哪些来源读取需求 |
+| 质量门严格度选哪种？ | 标准 | 决定强制哪些本地质量门和云端检查 |
+| 测试失败允许自动修复几次？ | 3 次 | 决定同一测试门失败几次后停止 |
+| 遇到高风险情况时怎么处理？ | 停止并询问 | 决定需求不清、缺 token、外部服务、安全/数据风险时是否继续 |
+
+配置会写入：
+
+```text
+~/.codex/config/codex-dev-loop.json
+```
+
+配置完成后会输出类似说明：
+
+```text
+自动化范围当前的设置是“创建 PR 后停止”；如后续需要调整自动化范围、需求来源、质量门严格度、测试重试次数或风险处理方式，也请随时告知我。
+```
+
 ### 依赖环境
 
 必需：
@@ -206,7 +243,7 @@ git -C "$env:USERPROFILE\.codex\skills\codex-dev-loop" pull
 | 从 Notion 页面开始 | `请使用 $codex-dev-loop 处理这个 Notion 页面` |
 | 先审方案，不写代码 | `只做技术方案、测试计划、风险分析和 Subagent 评审` |
 | 给已有 PR 补质量门 | `用 ai-code-quality-gate 检查当前分支，并补齐失败项` |
-| 自动开发但严格停机 | `测试失败 3 次、质量门失败、需求不清或缺 token 时停止` |
+| 自动开发但严格停机 | `测试失败达到配置阈值、质量门失败、需求不清或缺 token 时停止` |
 
 ### Hook 和 gate 在哪里
 
@@ -236,9 +273,11 @@ git -C "$env:USERPROFILE\.codex\skills\codex-dev-loop" pull
 
 ```text
 codex-dev-loop/
+  VERSION                          当前版本号
   SKILL.md                         skill 主文件
   agents/openai.yaml               Codex UI 展示信息
   scripts/
+    configure_dev_loop.py          初次安装配置向导
     dev_loop_harness.py            状态机和阶段闸门
     self_test.py                   自测脚本
     validate_dev_loop_artifacts.py 产物校验
@@ -268,7 +307,7 @@ codex-dev-loop/
 遇到下面情况，loop 应该停下来问你：
 
 - 需求不清。
-- 测试连续失败 3 次。
+- 测试失败达到配置阈值。
 - 质量门失败。
 - 发现架构、安全、数据迁移或兼容性风险。
 - 缺少 GitHub token、服务 token 或 secret。
@@ -311,7 +350,7 @@ README 的表达结构参考了 [op7418/guizang-ppt-skill](https://github.com/op
 
 Give it a Notion page or a local Markdown spec. It turns that input into a technical design, test plan, risk analysis, and development plan. Subagents review those planning artifacts before implementation starts. After coding, the loop runs tests, local quality gates, cloud checks, and PR-level review before the change is allowed to move forward.
 
-The point is not to make AI code faster at any cost. The point is to let AI code while keeping enough brakes in the system.
+The goal is straightforward: let Codex move development forward while tests, reviews, quality gates, and PR checks keep risk under control.
 
 ### 30-Second Start
 
@@ -325,6 +364,12 @@ Update an existing install:
 
 ```powershell
 git -C "$env:USERPROFILE\.codex\skills\codex-dev-loop" pull
+```
+
+Before the first run, configure the five core preferences:
+
+```powershell
+python "$env:USERPROFILE\.codex\skills\codex-dev-loop\scripts\configure_dev_loop.py"
 ```
 
 Restart Codex, then ask:
@@ -350,11 +395,11 @@ Good fit:
 
 Bad fit:
 
-- Vague ideas without acceptance criteria.
-- Repositories where Codex cannot read files, write files, run commands, or use git.
-- Codebases with no tests and no plan to add tests.
-- Production config, database, or live infrastructure changes.
-- Changes that must bypass quality gates.
+- Vague ideas without acceptance criteria. First write a small `Goal` and `Acceptance Criteria` section.
+- Repositories where Codex cannot read files, write files, run commands, or use git. Start with planning-only mode.
+- Codebases with no tests and no plan to add tests. Add a smoke test or critical-path test first.
+- Production config, database, or live infrastructure changes. Split the task into design review first, then human-controlled execution.
+- Changes that must bypass quality gates. Reduce task scope or tune the gate profile instead of disabling all gates.
 
 ### What The Loop Does
 
@@ -364,8 +409,8 @@ Bad fit:
 | Planning | Produce design, file scope, test plan, risk analysis, and development plan | Stop on architecture risk |
 | Subagent review | Cross-check plan, implementation approach, and risk | Revise and review again |
 | Implementation | Build one independently testable unit at a time | Do not skip units |
-| Test gate | Run tests for each unit, with at most three failed attempts | Stop after repeated failures |
-| Local quality gate | Run `ai-code-quality-gate` | Stop on quality failure |
+| Test gate | Run tests for each unit; failure limit follows first-run config | Stop after the configured limit |
+| Local quality gate | Run `ai-code-quality-gate`; strictness follows first-run config | Stop on quality failure |
 | PR stage | Create branch, commit, push, and open PR | Stop if credentials are missing |
 | Cloud checks | Verify GitHub Actions and PR-level AI review | Stop if checks fail or are missing |
 
@@ -426,6 +471,36 @@ git clone https://github.com/Thyd/codex-dev-loop.git "$env:USERPROFILE\.codex\sk
 
 Restart Codex after installation.
 
+### First-Run Configuration
+
+Before the first run, start the setup wizard:
+
+```powershell
+python "$env:USERPROFILE\.codex\skills\codex-dev-loop\scripts\configure_dev_loop.py"
+```
+
+It asks five questions:
+
+| Question | Default | Impact |
+|---|---|---|
+| How far should automation go? | Stop after PR creation | Controls planning-only, commit-only, or PR flow |
+| What source types do you use? | Markdown + Notion | Controls allowed requirement sources |
+| How strict should quality gates be? | Standard | Controls required local and cloud gates |
+| How many failed test attempts are allowed? | 3 | Controls when the loop stops on repeated test failures |
+| What should happen on high risk? | Stop and ask | Controls unclear requirements, missing tokens, external services, security/data risk |
+
+The config is written to:
+
+```text
+~/.codex/config/codex-dev-loop.json
+```
+
+The wizard ends with a note like:
+
+```text
+Automation scope is currently set to "Stop after PR creation"; tell me anytime if you want to adjust automation scope, source types, quality strictness, test retry count, or risk handling.
+```
+
 ### Requirements
 
 Required:
@@ -481,9 +556,11 @@ The loop does not rely on a Git `pre-commit` hook. Its hooks are harness-enforce
 
 ```text
 codex-dev-loop/
+  VERSION
   SKILL.md
   agents/openai.yaml
   scripts/
+    configure_dev_loop.py
     dev_loop_harness.py
     self_test.py
     validate_dev_loop_artifacts.py
