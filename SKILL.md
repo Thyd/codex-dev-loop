@@ -5,7 +5,7 @@ description: Run an end-to-end Codex autonomous development loop from a Notion p
 
 # Codex Dev Loop
 
-Current version: 0.2.1
+Current version: 0.2.2
 
 ## Operating Contract
 
@@ -228,11 +228,11 @@ The harness runs the equivalent quality gate command:
 ```bash
 python ~/.codex/skills/ai-code-quality-gate/scripts/quality_gate.py \
   --workspace . \
-  --require <configured-gates> \
+  --require <extra-gates> \
   --alignment-report .codex/quality-gate/subagent-alignment.md
 ```
 
-For `strict` profile the harness also passes `--strict`. The harness requires real `$ai-code-quality-gate` output and verifies that all gates required by the configured profile pass. PR-level AI review is enforced later in the cloud check stage for standard and strict profiles.
+For `strict` profile the harness also passes `--strict`. Configured profile gates are always required; `run-quality --require` can only add gates, not replace or weaken the profile. The harness requires real `$ai-code-quality-gate` output and verifies that all gates required by the configured profile pass. PR-level AI review is enforced later in the cloud check stage for standard and strict profiles.
 
 ## External Service Policy
 
@@ -273,8 +273,8 @@ python <skill-dir>/scripts/dev_loop_harness.py --root .codex/dev-loop record-com
 - Push the branch and open a PR.
 - Include design, tests, risk, quality gate summary, and Subagent review summary in the PR body.
 - Inspect GitHub Actions checks when available and record the result.
-- Record branch, commit, and PR URL with `scripts/dev_loop_harness.py record-pr`; the harness verifies them with `gh pr view`.
-- Record cloud checks with `scripts/dev_loop_harness.py record-cloud --status passed`; the harness verifies them with `gh pr checks`.
+- Record branch, commit, and PR URL with `scripts/dev_loop_harness.py record-pr`; the harness verifies them with `gh pr view` and checks that the PR repository matches local `origin`.
+- Record cloud checks with `scripts/dev_loop_harness.py record-cloud --status passed`; the harness verifies them with `gh pr checks`, requires exact canonical names for required checks, and does not let unrelated optional failures block the loop.
 - `record-pr --allow-local-simulation` and `record-cloud --allow-local-simulation` are self-test only and require `CODEX_DEV_LOOP_TEST_MODE=1`.
 
 Stop if:

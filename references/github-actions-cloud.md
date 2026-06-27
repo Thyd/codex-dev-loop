@@ -33,7 +33,7 @@ After opening the PR:
 6. If checks fail because of code, fix code locally and repeat the development loop.
 7. If checks fail because of missing secrets, missing paid service setup, branch protection, or organization settings, stop and ask the user.
 
-The harness verifies cloud checks with `gh pr checks` and requires the fixed checks plus Qodo PR-Agent, CodeRabbit, or another AI review check. Do not hand-write cloud evidence during a real loop.
+The harness verifies cloud checks with `gh pr checks` and requires the fixed checks plus Qodo PR-Agent, CodeRabbit, or another AI review check. Required check names are matched by exact canonical name, not by substring. Optional non-required checks may be recorded, but they do not block the loop unless they are the required AI review check. Do not hand-write cloud evidence during a real loop.
 
 ## Stop Conditions
 

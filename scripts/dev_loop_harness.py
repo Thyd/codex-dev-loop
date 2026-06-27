@@ -16,6 +16,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+from urllib.parse import urlparse
 
 
 PHASES = [
@@ -126,6 +127,15 @@ def now() -> str:
 
 def split_csv(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def merge_unique(*groups: list[str]) -> list[str]:
+    merged: list[str] = []
+    for group in groups:
+        for item in group:
+            if item not in merged:
+                merged.append(item)
+    return merged
 
 
 def default_config() -> dict:
@@ -262,6 +272,48 @@ def current_git_branch(workspace: Path) -> str:
 
 def current_git_head(workspace: Path) -> str:
     return run_git(workspace, ["rev-parse", "HEAD"], check=True).stdout.strip()
+
+
+def git_origin_repository(workspace: Path) -> str:
+    remote = run_git(workspace, ["remote", "get-url", "origin"], check=True).stdout.strip()
+    return normalize_github_repository(remote)
+
+
+def normalize_github_repository(value: str) -> str:
+    text = value.strip()
+    if not text:
+        return ""
+    if text.startswith("git@github.com:"):
+        path = text.split(":", 1)[1]
+    elif text.startswith("ssh://git@github.com/"):
+        path = urlparse(text).path.lstrip("/")
+    else:
+        parsed = urlparse(text)
+        if parsed.netloc.lower() != "github.com":
+            return ""
+        path = parsed.path.lstrip("/")
+    if path.endswith(".git"):
+        path = path[:-4]
+    parts = [part for part in path.split("/") if part]
+    if len(parts) < 2:
+        return ""
+    return "/".join(parts[:2]).lower()
+
+
+def pr_repository(data: dict, pr_url: str) -> str:
+    for key in ("repository", "repositoryFullName", "baseRepository"):
+        value = data.get(key)
+        if isinstance(value, str):
+            normalized = normalize_github_repository(f"https://github.com/{value}")
+            if normalized:
+                return normalized
+        if isinstance(value, dict):
+            full_name = value.get("nameWithOwner") or value.get("fullName")
+            if isinstance(full_name, str):
+                normalized = normalize_github_repository(f"https://github.com/{full_name}")
+                if normalized:
+                    return normalized
+    return normalize_github_repository(pr_url)
 
 
 def workspace_files(workspace: Path) -> list[Path]:
@@ -761,6 +813,16 @@ def passing_check(item: dict) -> bool:
     return state in {"pass", "passed", "success", "successful", "completed_successfully"}
 
 
+def canonical_check_name(value: str) -> str:
+    normalized = value.strip().lower()
+    return "-".join(part for part in normalized.replace("_", "-").replace("/", " ").split() if part)
+
+
+def is_ai_review_check(name: str) -> bool:
+    canonical = canonical_check_name(name)
+    return any(alias in canonical for alias in AI_REVIEW_CHECK_ALIASES)
+
+
 def run_gh_json(workspace: Path, gh: str, args: list[str]) -> object:
     result = run_child([gh, *args], workspace)
     if result.returncode != 0:
@@ -780,7 +842,7 @@ def load_json_file(path: Path) -> object:
         raise SystemExit(f"Evidence file is not valid JSON: {path}: {exc}") from exc
 
 
-def validate_pr_evidence(data: object, branch: str, commit: str, pr_url: str) -> dict:
+def validate_pr_evidence(data: object, branch: str, commit: str, pr_url: str, expected_repo: str) -> dict:
     if not isinstance(data, dict):
         raise SystemExit("PR evidence must be a JSON object.")
     if data.get("url") != pr_url:
@@ -791,6 +853,11 @@ def validate_pr_evidence(data: object, branch: str, commit: str, pr_url: str) ->
         raise SystemExit("GitHub PR evidence head SHA does not match commit.")
     if str(data.get("state") or "").upper() != "OPEN":
         raise SystemExit("GitHub PR evidence must show an open PR.")
+    actual_repo = pr_repository(data, pr_url)
+    if not expected_repo:
+        raise SystemExit("Could not determine local GitHub origin repository.")
+    if actual_repo != expected_repo:
+        raise SystemExit(f"GitHub PR evidence repository {actual_repo!r} does not match local origin {expected_repo!r}.")
     return data
 
 
@@ -806,13 +873,17 @@ def validate_cloud_evidence(data: object, required_checks: list[str], require_ai
         if not name:
             raise SystemExit("GitHub Actions evidence contains a check without a name.")
         checks.append({"name": name, "state": state, **item})
-    names = [item["name"].lower() for item in checks]
-    missing = [check for check in required_checks if not any(check.lower() in name for name in names)]
+    by_canonical_name = {canonical_check_name(item["name"]): item for item in checks}
+    missing = [check for check in required_checks if canonical_check_name(check) not in by_canonical_name]
     if missing:
         raise SystemExit("GitHub Actions evidence is missing required checks: " + ", ".join(missing))
-    if require_ai_review and not any(any(alias in name for alias in AI_REVIEW_CHECK_ALIASES) for name in names):
+    ai_review_checks = [item for item in checks if is_ai_review_check(item["name"])]
+    if require_ai_review and not ai_review_checks:
         raise SystemExit("GitHub Actions evidence must include Qodo PR-Agent, CodeRabbit, or another AI review check.")
-    failing = [item["name"] for item in checks if not passing_check(item)]
+    required_names = {canonical_check_name(check) for check in required_checks}
+    must_pass = [item for name, item in by_canonical_name.items() if name in required_names]
+    must_pass.extend(ai_review_checks)
+    failing = sorted({item["name"] for item in must_pass if not passing_check(item)})
     if failing:
         raise SystemExit("GitHub Actions checks are not all passing: " + ", ".join(failing))
     return checks
@@ -1068,7 +1139,9 @@ def cmd_run_quality(args: argparse.Namespace) -> int:
         raise SystemExit(f"Quality gate script does not exist: {script}")
     profile_name = loop_config(state)["quality_profile"]
     profile = quality_profile(state)
-    required_gates = split_csv(args.require) if args.require else list(profile["quality_gates"])
+    profile_gates = list(profile["quality_gates"])
+    extra_required_gates = split_csv(args.require)
+    required_gates = merge_unique(profile_gates, extra_required_gates)
     out_dir = Path(args.out_dir) if args.out_dir else workspace / ".codex" / "quality-gate" / dt.datetime.now().strftime("%Y%m%d-%H%M%S-dev-loop")
     if out_dir.exists():
         raise SystemExit(f"Quality gate out-dir already exists; refusing to reuse stale artifacts: {out_dir}")
@@ -1174,17 +1247,19 @@ def cmd_record_pr(args: argparse.Namespace) -> int:
         raise SystemExit(f"Current HEAD {current_head!r} does not match PR commit {args.commit!r}.")
     if "github.com/" not in args.pr_url or "/pull/" not in args.pr_url:
         raise SystemExit("PR URL must be a GitHub pull request URL.")
+    expected_repo = git_origin_repository(workspace)
     if args.allow_local_simulation:
         assert_test_mode("PR local simulation")
         if not args.evidence:
             raise SystemExit("--evidence is required with --allow-local-simulation.")
-        pr_data = validate_pr_evidence(load_json_file(Path(args.evidence)), args.branch, args.commit, args.pr_url)
+        pr_data = validate_pr_evidence(load_json_file(Path(args.evidence)), args.branch, args.commit, args.pr_url, expected_repo)
     else:
         pr_data = validate_pr_evidence(
-            run_gh_json(workspace, args.gh, ["pr", "view", args.pr_url, "--json", "url,headRefName,headRefOid,state"]),
+            run_gh_json(workspace, args.gh, ["pr", "view", args.pr_url, "--json", "url,headRefName,headRefOid,state,baseRepository"]),
             args.branch,
             args.commit,
             args.pr_url,
+            expected_repo,
         )
     evidence_dest = root / "pr-evidence.json"
     evidence_dest.write_text(json.dumps(pr_data, indent=2), encoding="utf-8")
@@ -1339,7 +1414,7 @@ def build_parser() -> argparse.ArgumentParser:
     quality.add_argument("--out-dir", default="")
     quality.add_argument("--alignment-report", default=".codex/quality-gate/subagent-alignment.md")
     quality.add_argument("--timeout", type=int, default=900)
-    quality.add_argument("--require", default="")
+    quality.add_argument("--require", default="", help="Additional required gates; configured profile gates are always required.")
     quality.add_argument("--pr-url", default="")
     quality.add_argument("--command", action="append", default=[], metavar="GATE=COMMAND")
     quality.set_defaults(func=cmd_run_quality)

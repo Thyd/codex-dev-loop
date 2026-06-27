@@ -1,7 +1,7 @@
 # Codex Dev Loop · 从需求到 PR 的自动开发 loop
 
 ![Skill](https://img.shields.io/badge/Skill-Codex-111111?style=flat-square)
-![Version](https://img.shields.io/badge/Version-v0.2.1-blue?style=flat-square)
+![Version](https://img.shields.io/badge/Version-v0.2.2-blue?style=flat-square)
 ![Quality Gate](https://img.shields.io/badge/Quality%20Gate-required-0A7CFF?style=flat-square)
 ![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-supported-2088FF?style=flat-square)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
@@ -255,8 +255,9 @@ harness 会执行这些配置：不允许的来源类型会在 `init --source-ty
 
 - 规划评审闸门：技术方案、测试计划、风险分析必须通过 Subagent 评审。
 - 测试闸门：每个开发单元都要跑测试，结果写入记录。
-- 质量闸门：调用 `ai-code-quality-gate`，检查 lint、typecheck、test 和安全/质量扫描。
-- PR 闸门：检查 GitHub Actions 和 PR 级 AI review。
+- 质量闸门：调用 `ai-code-quality-gate`，已配置 profile gate 始终强制执行，`run-quality --require` 只能追加 gate。
+- PR 闸门：检查 GitHub Actions 和 PR 级 AI review，并确认 PR 仓库与本地 `origin` 一致。
+- 云端检查闸门：required check 用规范化后的精确名称匹配；非必需的可选检查失败不会阻断。
 - 指纹闸门：规划、评审、测试和质量报告都绑定当前文件状态，防止复用旧报告。
 
 ### 为什么要这么麻烦
@@ -552,8 +553,9 @@ The loop does not rely on a Git `pre-commit` hook. Its hooks are harness-enforce
 
 - Planning review gate.
 - Unit test gate.
-- Local quality gate through `ai-code-quality-gate`.
-- PR and GitHub Actions gate.
+- Local quality gate through `ai-code-quality-gate`; configured profile gates always remain required, and `run-quality --require` can only add gates.
+- PR and GitHub Actions gate; PR evidence must point to the same GitHub repository as local `origin`.
+- Cloud check gate; required checks use exact canonical-name matching, while unrelated optional check failures do not block the loop.
 - Fingerprint gate that prevents stale reports from being reused.
 
 ### Repository Layout

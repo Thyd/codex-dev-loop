@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.2 - 2026-06-27
+
+### Fixed
+
+- Made `run-quality --require` additive so callers cannot weaken the configured quality profile.
+- Updated `validate_dev_loop_artifacts.py` to reuse harness validation semantics when loop state or final records are involved.
+- Matched GitHub Actions required checks by exact canonical name instead of substring.
+- Bound PR evidence to the local GitHub `origin` repository before accepting a recorded PR.
+
 ## 0.2.1 - 2026-06-27
 
 ### Fixed
@@ -15,4 +24,3 @@
 
 - Added `record-commit` to bind commit-only completion to the current HEAD and workspace fingerprint.
 - Added self-test coverage for source type enforcement, early completion modes, local simulation restrictions, and stricter cloud check states.
-

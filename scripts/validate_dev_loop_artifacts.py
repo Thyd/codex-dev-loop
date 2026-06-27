@@ -7,6 +7,8 @@ import argparse
 from pathlib import Path
 import sys
 
+import dev_loop_harness
+
 
 REQUIRED_FILES = [
     "source.md",
@@ -51,13 +53,31 @@ def section_has_content(text: str, heading: str) -> bool:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Validate Codex dev loop records.")
     parser.add_argument("--root", default=".codex/dev-loop", help="Dev loop record directory.")
-    parser.add_argument("--require-final", action="store_true", help="Require final-report.md and pr-body.md.")
+    parser.add_argument("--workspace", default=".", help="Workspace directory for harness-backed validation.")
+    parser.add_argument("--require-reviews", action="store_true", help="Require passing reviews appropriate to the automation level.")
+    parser.add_argument("--require-final", action="store_true", help="Require final records appropriate to the automation level.")
     return parser.parse_args()
+
+
+def use_harness_validation(args: argparse.Namespace, root: Path) -> int | None:
+    state_path = root / "loop-state.json"
+    if not state_path.exists() and not args.require_reviews and not args.require_final:
+        return None
+    harness_args = argparse.Namespace(
+        root=str(root),
+        workspace=args.workspace,
+        require_reviews=args.require_reviews or args.require_final,
+        require_final=args.require_final,
+    )
+    return dev_loop_harness.cmd_validate(harness_args)
 
 
 def main() -> int:
     args = parse_args()
     root = Path(args.root)
+    harness_result = use_harness_validation(args, root)
+    if harness_result is not None:
+        return harness_result
     findings: list[str] = []
 
     if not root.exists():

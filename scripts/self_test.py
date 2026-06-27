@@ -177,6 +177,7 @@ def init_git_repo(workspace: Path, branch: str = "codex/test") -> None:
     must(["git", "init"], workspace)
     must(["git", "config", "user.email", "codex@example.invalid"], workspace)
     must(["git", "config", "user.name", "Codex Self Test"], workspace)
+    must(["git", "remote", "add", "origin", "https://github.com/example/repo.git"], workspace)
     (workspace / "app.txt").write_text("initial\n", encoding="utf-8")
     must(["git", "add", "app.txt"], workspace)
     must(["git", "commit", "-m", "init"], workspace)
@@ -279,7 +280,15 @@ def record_review(harness: Path, workspace: Path, root: Path, tmp: Path, role: s
     )
 
 
-def run_quality(harness: Path, workspace: Path, root: Path, out_dir: Path, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+def run_quality(
+    harness: Path,
+    workspace: Path,
+    root: Path,
+    out_dir: Path,
+    env: dict[str, str] | None = None,
+    require: str = "",
+    gate_names: list[str] | None = None,
+) -> subprocess.CompletedProcess:
     quality_script = Path.home() / ".codex" / "skills" / "ai-code-quality-gate" / "scripts" / "quality_gate.py"
     if not quality_script.exists():
         raise SystemExit(f"Missing ai-code-quality-gate script for self-test: {quality_script}")
@@ -297,7 +306,9 @@ def run_quality(harness: Path, workspace: Path, root: Path, out_dir: Path, env: 
         "--out-dir",
         str(out_dir),
     ]
-    for gate in ["lint", "typecheck", "test", "semgrep", "codeql", "sonar", "qodana"]:
+    if require:
+        command.extend(["--require", require])
+    for gate in gate_names or ["lint", "typecheck", "test", "semgrep", "codeql", "sonar", "qodana"]:
         command.extend(["--command", f"{gate}={pass_command()}"])
     return run(command, env=env)
 
@@ -484,6 +495,11 @@ def main() -> int:
             print(validate_planning_only.stdout)
             print("Expected planning_only final validation to require only planning records.")
             return 1
+        wrapper_validate_planning_only = run([sys.executable, str(validator), "--workspace", str(workspace), "--root", str(root), "--require-final"])
+        if wrapper_validate_planning_only.returncode != 0:
+            print(wrapper_validate_planning_only.stdout)
+            print("Expected legacy validator to reuse planning_only harness final validation.")
+            return 1
         blocked_by_config = run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "branch"])
         if blocked_by_config.returncode == 0:
             print(blocked_by_config.stdout)
@@ -591,6 +607,33 @@ def main() -> int:
             print("Expected failing ai-code-quality-gate process to block.")
             return 1
 
+    with tempfile.TemporaryDirectory(prefix="codex-dev-loop-quality-floor-test-") as raw_tmp:
+        tmp = Path(raw_tmp)
+        workspace, root = init_loop(harness, tmp)
+        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "plan_review"])
+        record_plan_review(harness, workspace, root, tmp)
+        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "branch"])
+        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "record-branch", "--branch", "codex/test"])
+        (workspace / "app.txt").write_text("feature\n", encoding="utf-8")
+        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "implementation"])
+        run_test(harness, workspace, root, "dev-001", pass_command())
+        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "implementation_review"])
+        impl = record_review(harness, workspace, root, tmp, "implementation-reviewer", IMPLEMENTATION_REVIEW_BODY)
+        if impl.returncode != 0:
+            print(impl.stdout)
+            return 1
+        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "risk_review"])
+        risk = record_review(harness, workspace, root, tmp, "risk-reviewer", RISK_REVIEW_BODY)
+        if risk.returncode != 0:
+            print(risk.stdout)
+            return 1
+        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "quality_gate"])
+        reduced_quality = run_quality(harness, workspace, root, tmp / "reduced-quality", require="test", gate_names=["test"])
+        if reduced_quality.returncode == 0:
+            print(reduced_quality.stdout)
+            print("Expected --require test to add to, not replace, configured standard quality gates.")
+            return 1
+
     with tempfile.TemporaryDirectory(prefix="codex-dev-loop-commit-only-test-") as raw_tmp:
         tmp = Path(raw_tmp)
         config_path = tmp / "commit-only.json"
@@ -646,6 +689,11 @@ def main() -> int:
         if validate_commit_only.returncode != 0:
             print(validate_commit_only.stdout)
             print("Expected commit_only final validation to require commit but not PR/cloud records.")
+            return 1
+        wrapper_validate_commit_only = run([sys.executable, str(validator), "--workspace", str(workspace), "--root", str(root), "--require-final"])
+        if wrapper_validate_commit_only.returncode != 0:
+            print(wrapper_validate_commit_only.stdout)
+            print("Expected legacy validator to reuse commit_only harness final validation.")
             return 1
         blocked_pr = run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "pr"])
         if blocked_pr.returncode == 0:
@@ -753,7 +801,7 @@ def main() -> int:
         pr_url = "https://github.com/example/repo/pull/1"
         pr_evidence = tmp / "pr-evidence.json"
         pr_evidence.write_text(
-            json.dumps({"url": pr_url, "headRefName": "codex/test", "headRefOid": commit, "state": "OPEN"}),
+            json.dumps({"url": pr_url, "headRefName": "codex/test", "headRefOid": commit, "state": "OPEN", "baseRepository": {"nameWithOwner": "example/repo"}}),
             encoding="utf-8",
         )
         production_env = {**os.environ}
@@ -806,6 +854,43 @@ def main() -> int:
         if bad_pr.returncode == 0:
             print(bad_pr.stdout)
             print("Expected PR record with wrong commit to fail.")
+            return 1
+        wrong_repo_pr_evidence = tmp / "wrong-repo-pr-evidence.json"
+        wrong_repo_pr_evidence.write_text(
+            json.dumps(
+                {
+                    "url": "https://github.com/example/other/pull/1",
+                    "headRefName": "codex/test",
+                    "headRefOid": commit,
+                    "state": "OPEN",
+                    "baseRepository": {"nameWithOwner": "example/other"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        wrong_repo_pr = run(
+            [
+                sys.executable,
+                str(harness),
+                "--workspace",
+                str(workspace),
+                "--root",
+                str(root),
+                "record-pr",
+                "--branch",
+                "codex/test",
+                "--commit",
+                commit,
+                "--pr-url",
+                "https://github.com/example/other/pull/1",
+                "--evidence",
+                str(wrong_repo_pr_evidence),
+                "--allow-local-simulation",
+            ]
+        )
+        if wrong_repo_pr.returncode == 0:
+            print(wrong_repo_pr.stdout)
+            print("Expected PR evidence for a different GitHub repository to fail.")
             return 1
         pr = run(
             [
@@ -876,6 +961,21 @@ def main() -> int:
             print(completed_cloud.stdout)
             print("Expected completed-without-success cloud check state to fail.")
             return 1
+        substring_cloud_evidence = tmp / "substring-cloud-evidence.json"
+        substring_cloud_evidence.write_text(
+            json.dumps(
+                [
+                    {"name": "not-ai-quality-gate", "state": "success"},
+                    {"name": "qodo-pr-agent", "state": "success"},
+                ]
+            ),
+            encoding="utf-8",
+        )
+        substring_cloud = run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "record-cloud", "--status", "passed", "--evidence", str(substring_cloud_evidence), "--allow-local-simulation"])
+        if substring_cloud.returncode == 0:
+            print(substring_cloud.stdout)
+            print("Expected cloud checks to require exact canonical names, not substring matches.")
+            return 1
         cloud_evidence = tmp / "cloud-evidence.json"
         cloud_evidence.write_text(
             json.dumps(
@@ -887,6 +987,7 @@ def main() -> int:
                     {"name": "qodana", "state": "success"},
                     {"name": "subagent-alignment", "state": "success"},
                     {"name": "qodo-pr-agent", "state": "success"},
+                    {"name": "optional-flaky-check", "state": "failure"},
                 ]
             ),
             encoding="utf-8",
