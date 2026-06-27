@@ -56,6 +56,13 @@ Tests: <summary>
 Quality: ai-code-quality-gate passed
 ```
 
+For `commit_only` automation, record the committed HEAD and then complete the loop:
+
+```bash
+python <skill-dir>/scripts/dev_loop_harness.py --root .codex/dev-loop record-commit
+python <skill-dir>/scripts/dev_loop_harness.py --root .codex/dev-loop set-phase complete
+```
+
 ## Push And PR
 
 Use GitHub tooling or `gh`:

@@ -5,7 +5,7 @@ description: Run an end-to-end Codex autonomous development loop from a Notion p
 
 # Codex Dev Loop
 
-Current version: 0.2.0
+Current version: 0.2.1
 
 ## Operating Contract
 
@@ -113,8 +113,10 @@ If either is missing, stop with a blocker and ask the user for the missing infor
 Initialize local loop state before generating planning artifacts:
 
 ```bash
-python <skill-dir>/scripts/dev_loop_harness.py --root .codex/dev-loop init --source <source.md>
+python <skill-dir>/scripts/dev_loop_harness.py --root .codex/dev-loop init --source <source.md> --source-type markdown
 ```
+
+Use `--source-type notion` when the source was fetched from Notion. The harness refuses source types that are disabled by first-run configuration.
 
 Advance phases only through the harness:
 
@@ -262,11 +264,18 @@ python <skill-dir>/scripts/dev_loop_harness.py --root .codex/dev-loop record-bra
 ```
 
 - Commit only after tests, Subagent reviews, and `$ai-code-quality-gate` pass.
+- In `commit_only` automation, record the committed HEAD before completing:
+
+```bash
+python <skill-dir>/scripts/dev_loop_harness.py --root .codex/dev-loop record-commit
+```
+
 - Push the branch and open a PR.
 - Include design, tests, risk, quality gate summary, and Subagent review summary in the PR body.
 - Inspect GitHub Actions checks when available and record the result.
 - Record branch, commit, and PR URL with `scripts/dev_loop_harness.py record-pr`; the harness verifies them with `gh pr view`.
 - Record cloud checks with `scripts/dev_loop_harness.py record-cloud --status passed`; the harness verifies them with `gh pr checks`.
+- `record-pr --allow-local-simulation` and `record-cloud --allow-local-simulation` are self-test only and require `CODEX_DEV_LOOP_TEST_MODE=1`.
 
 Stop if:
 

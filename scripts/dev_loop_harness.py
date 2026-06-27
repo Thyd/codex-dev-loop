@@ -43,6 +43,7 @@ DEFAULT_CODEX_HOME = Path.home() / ".codex"
 DEFAULT_CONFIG_PATH = DEFAULT_CODEX_HOME / "config" / "codex-dev-loop.json"
 DEFAULT_TEST_GATE_SCRIPT = DEFAULT_CODEX_HOME / "skills" / "automated-dev-executor" / "scripts" / "test_gate.py"
 DEFAULT_QUALITY_GATE_SCRIPT = DEFAULT_CODEX_HOME / "skills" / "ai-code-quality-gate" / "scripts" / "quality_gate.py"
+TEST_MODE_ENV = "CODEX_DEV_LOOP_TEST_MODE"
 CONFIG_SCHEMA_VERSION = 1
 DEFAULT_CONFIG = {
     "schema_version": CONFIG_SCHEMA_VERSION,
@@ -189,6 +190,8 @@ def quality_profile(state: dict) -> dict:
 
 def assert_config_allows_phase(state: dict, target: str) -> None:
     automation_level = loop_config(state)["automation_level"]
+    if target == "complete":
+        return
     if automation_level == "planning_only" and PHASE_INDEX[target] > PHASE_INDEX["plan_review"]:
         raise SystemExit("Configured automation_level=planning_only blocks implementation, git, PR, and cloud-check phases.")
     if automation_level == "commit_only" and PHASE_INDEX[target] >= PHASE_INDEX["pr"]:
@@ -315,6 +318,15 @@ def parse_report_field(text: str, label: str) -> str:
 def run_child(command: list[str], workspace: Path) -> subprocess.CompletedProcess:
     env = {**os.environ}
     return subprocess.run(command, cwd=str(workspace), text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
+
+
+def test_mode_enabled() -> bool:
+    return os.environ.get(TEST_MODE_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def assert_test_mode(feature: str) -> None:
+    if not test_mode_enabled():
+        raise SystemExit(f"{feature} is only allowed when {TEST_MODE_ENV}=1.")
 
 
 def parse_key_value_output(output: str, key: str) -> str:
@@ -524,6 +536,16 @@ def git_pr_is_current(state: dict, root: Path, workspace: Path) -> bool:
     return current_record(record, root, workspace, include_workspace=True)
 
 
+def git_commit_is_current(state: dict, root: Path, workspace: Path) -> bool:
+    record = state.get("git", {})
+    commit = record.get("commit")
+    if not commit or not is_git_repo(workspace):
+        return False
+    if current_git_head(workspace) != commit:
+        return False
+    return current_record(record, root, workspace, include_workspace=True)
+
+
 def cloud_is_current(state: dict, root: Path, workspace: Path) -> bool:
     record = state.get("github_actions", {})
     if record.get("status") != "passed":
@@ -531,7 +553,28 @@ def cloud_is_current(state: dict, root: Path, workspace: Path) -> bool:
     return current_record(record, root, workspace, include_workspace=True)
 
 
+def assert_completion_prereqs(root: Path, state: dict, workspace: Path) -> None:
+    assert_no_blockers(state)
+    assert_core_artifacts(root)
+    automation_level = loop_config(state)["automation_level"]
+    if automation_level == "planning_only":
+        if not review_is_current(state, "plan-reviewer", root, workspace):
+            raise SystemExit("Cannot complete planning-only mode before plan-reviewer passes.")
+        return
+    if automation_level == "commit_only":
+        if not quality_is_current(state, root, workspace):
+            raise SystemExit("Cannot complete commit-only mode before quality gate passes.")
+        if not git_commit_is_current(state, root, workspace):
+            raise SystemExit("Cannot complete commit-only mode before recording the current commit.")
+        return
+    if not cloud_is_current(state, root, workspace):
+        raise SystemExit("Cannot complete before GitHub Actions cloud checks pass.")
+
+
 def assert_phase_prereqs(root: Path, state: dict, target: str, workspace: Path) -> None:
+    if target == "complete":
+        assert_completion_prereqs(root, state, workspace)
+        return
     assert_no_blockers(state)
     if target in {"plan_review", "branch", "implementation", "implementation_review", "risk_review", "quality_gate", "pr", "cloud_checks", "complete"}:
         assert_core_artifacts(root)
@@ -576,6 +619,9 @@ def assert_transition(root: Path, state: dict, target: str, workspace: Path) -> 
     current_index = PHASE_INDEX[current]
     target_index = PHASE_INDEX[target]
     if target == current:
+        assert_phase_prereqs(root, state, target, workspace)
+        return
+    if target == "complete":
         assert_phase_prereqs(root, state, target, workspace)
         return
     if target_index == current_index + 1 or (current, target) in BACKTRACKS:
@@ -690,8 +736,29 @@ def validate_quality_results(results_path: Path, required_gates: list[str], requ
     return results
 
 
-def passing_state(value: str) -> bool:
-    return value.strip().lower() in {"pass", "passed", "success", "successful", "completed", "completed_successfully"}
+def quality_decision_allows_progress(decision: str, results: list[dict], required_gates: list[str]) -> tuple[bool, list[str]]:
+    if decision == "pass":
+        return True, []
+    if decision != "needs-human-review":
+        return False, []
+    required = set(required_gates)
+    skipped_review_gates = [
+        str(item.get("gate") or "")
+        for item in results
+        if str(item.get("gate") or "") in {"subagent-alignment", "ai-review"} and str(item.get("status") or "") == "skipped"
+    ]
+    deferred = [gate for gate in skipped_review_gates if gate == "ai-review" and gate not in required]
+    if skipped_review_gates and sorted(skipped_review_gates) == sorted(deferred):
+        return True, deferred
+    return False, deferred
+
+
+def passing_check(item: dict) -> bool:
+    state = str(item.get("state") or item.get("status") or "").strip().lower()
+    conclusion = str(item.get("conclusion") or item.get("outcome") or "").strip().lower()
+    if conclusion:
+        return conclusion in {"pass", "passed", "success", "successful"}
+    return state in {"pass", "passed", "success", "successful", "completed_successfully"}
 
 
 def run_gh_json(workspace: Path, gh: str, args: list[str]) -> object:
@@ -722,8 +789,8 @@ def validate_pr_evidence(data: object, branch: str, commit: str, pr_url: str) ->
         raise SystemExit("GitHub PR evidence branch does not match.")
     if data.get("headRefOid") != commit:
         raise SystemExit("GitHub PR evidence head SHA does not match commit.")
-    if str(data.get("state") or "").upper() not in {"OPEN", "MERGED"}:
-        raise SystemExit("GitHub PR evidence must show an open or merged PR.")
+    if str(data.get("state") or "").upper() != "OPEN":
+        raise SystemExit("GitHub PR evidence must show an open PR.")
     return data
 
 
@@ -745,7 +812,7 @@ def validate_cloud_evidence(data: object, required_checks: list[str], require_ai
         raise SystemExit("GitHub Actions evidence is missing required checks: " + ", ".join(missing))
     if require_ai_review and not any(any(alias in name for alias in AI_REVIEW_CHECK_ALIASES) for name in names):
         raise SystemExit("GitHub Actions evidence must include Qodo PR-Agent, CodeRabbit, or another AI review check.")
-    failing = [item["name"] for item in checks if not passing_state(str(item.get("state") or ""))]
+    failing = [item["name"] for item in checks if not passing_check(item)]
     if failing:
         raise SystemExit("GitHub Actions checks are not all passing: " + ", ".join(failing))
     return checks
@@ -761,6 +828,9 @@ def copy_report(src: Path, dest: Path) -> None:
 def cmd_init(args: argparse.Namespace) -> int:
     root = Path(args.root)
     root.mkdir(parents=True, exist_ok=True)
+    config = load_loop_config(args.config)
+    if args.source_type not in config["source_types"]:
+        raise SystemExit(f"Configured source_types do not allow {args.source_type!r} sources.")
     source = Path(args.source) if args.source else None
     if source and source.exists():
         shutil.copyfile(source, root / "source.md")
@@ -776,8 +846,9 @@ def cmd_init(args: argparse.Namespace) -> int:
         "phase": "planning",
         "created_at": now(),
         "updated_at": now(),
-        "config": load_loop_config(args.config),
+        "config": config,
         "source": str(source) if source else "",
+        "source_type": args.source_type,
         "source_fingerprint": sha256_bytes((root / "source.md").read_bytes()),
         "reviews": {},
         "test_attempts": {},
@@ -897,6 +968,8 @@ def cmd_run_test(args: argparse.Namespace) -> int:
     state = read_state(root)
     assert_phase(state, {"implementation"})
     script = Path(args.test_gate_script)
+    if script.resolve() != DEFAULT_TEST_GATE_SCRIPT.resolve():
+        assert_test_mode("Caller-supplied test gate scripts")
     if not script.exists():
         raise SystemExit(f"Test gate script does not exist: {script}")
     command = [
@@ -948,8 +1021,8 @@ def record_quality_result(
     if not summary.exists():
         raise SystemExit(f"Quality summary does not exist: {summary}")
     decision = parse_quality_decision(summary)
-    required_gates_passed = decision in {"pass", "needs-human-review"}
-    validate_quality_results(results, required_gates, require_passed=required_gates_passed)
+    gate_results = validate_quality_results(results, required_gates, require_passed=True)
+    required_gates_passed, deferred_human_review = quality_decision_allows_progress(decision, gate_results, required_gates)
     dest = root / "quality-gate-summary.md"
     copy_report(summary, dest)
     results_dest = root / "quality-gate-results.json"
@@ -968,6 +1041,7 @@ def record_quality_result(
         "status": status,
         "quality_profile": profile_name,
         "required_gates": required_gates,
+        "deferred_human_review": deferred_human_review,
         "plan_fingerprint": fingerprints["plan"],
         "workspace_fingerprint": fingerprints["workspace"],
         "summary_fingerprint": sha256_bytes(dest.read_bytes()),
@@ -1048,6 +1122,39 @@ def cmd_record_branch(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_record_commit(args: argparse.Namespace) -> int:
+    root = Path(args.root)
+    workspace = Path(args.workspace).resolve()
+    state = read_state(root)
+    assert_phase(state, {"quality_gate", "pr"})
+    assert_phase_prereqs(root, state, "quality_gate", workspace)
+    if not quality_is_current(state, root, workspace):
+        raise SystemExit("Cannot record a commit before quality gate passes.")
+    if not is_git_repo(workspace):
+        raise SystemExit("Cannot record a commit outside a git repository.")
+    current_branch = current_git_branch(workspace)
+    recorded_branch = state.get("git", {}).get("branch")
+    if recorded_branch and current_branch != recorded_branch:
+        raise SystemExit(f"Current branch {current_branch!r} does not match recorded branch {recorded_branch!r}.")
+    if current_branch in PROTECTED_BRANCHES or current_branch.startswith("release/"):
+        raise SystemExit(f"Refusing to record a commit on protected branch: {current_branch}")
+    current_head = current_git_head(workspace)
+    if args.commit and args.commit != current_head:
+        raise SystemExit(f"Current HEAD {current_head!r} does not match requested commit {args.commit!r}.")
+    fingerprints = evidence_fingerprint(root, workspace)
+    state["git"] = {
+        **state.get("git", {}),
+        "branch": recorded_branch or current_branch,
+        "commit": current_head,
+        "plan_fingerprint": fingerprints["plan"],
+        "workspace_fingerprint": fingerprints["workspace"],
+        "commit_recorded_at": now(),
+    }
+    write_state(root, state)
+    print(f"Recorded commit: {current_head}")
+    return 0
+
+
 def cmd_record_pr(args: argparse.Namespace) -> int:
     root = Path(args.root)
     workspace = Path(args.workspace).resolve()
@@ -1068,6 +1175,7 @@ def cmd_record_pr(args: argparse.Namespace) -> int:
     if "github.com/" not in args.pr_url or "/pull/" not in args.pr_url:
         raise SystemExit("PR URL must be a GitHub pull request URL.")
     if args.allow_local_simulation:
+        assert_test_mode("PR local simulation")
         if not args.evidence:
             raise SystemExit("--evidence is required with --allow-local-simulation.")
         pr_data = validate_pr_evidence(load_json_file(Path(args.evidence)), args.branch, args.commit, args.pr_url)
@@ -1105,6 +1213,7 @@ def cmd_record_cloud(args: argparse.Namespace) -> int:
     profile = quality_profile(state)
     required_checks = [*profile["cloud_checks"], *args.extra_required_check]
     if args.allow_local_simulation:
+        assert_test_mode("GitHub Actions local simulation")
         if not args.evidence:
             raise SystemExit("--evidence is required with --allow-local-simulation.")
         cloud_data = load_json_file(Path(args.evidence))
@@ -1142,29 +1251,38 @@ def cmd_validate(args: argparse.Namespace) -> int:
     root = Path(args.root)
     workspace = Path(args.workspace).resolve()
     state = read_state(root)
+    automation_level = loop_config(state)["automation_level"]
     findings: list[str] = []
     try:
         assert_core_artifacts(root)
     except SystemExit as exc:
         findings.append(str(exc))
     if args.require_reviews:
-        for role in REVIEW_ROLES:
+        roles = ["plan-reviewer"] if automation_level == "planning_only" else sorted(REVIEW_ROLES)
+        for role in roles:
             if not review_is_current(state, role, root, workspace):
                 findings.append(f"Missing current passing review: {role}")
     if args.require_final:
-        for name in ["final-report.md", "pr-body.md", "github-actions.md", "quality-gate-summary.md", "quality-gate-results.json"]:
+        final_records = ["final-report.md"]
+        if automation_level != "planning_only":
+            final_records.extend(["quality-gate-summary.md", "quality-gate-results.json"])
+        if automation_level == "pr_without_merge":
+            final_records.extend(["pr-body.md", "github-actions.md"])
+        for name in final_records:
             if not (root / name).exists():
                 findings.append(f"Missing final record: {name}")
         git = state.get("git", {})
-        if not git.get("commit"):
+        if automation_level != "planning_only" and not git.get("commit"):
             findings.append("Missing commit hash")
-        if not git.get("pr_url"):
+        if automation_level == "pr_without_merge" and not git.get("pr_url"):
             findings.append("Missing PR URL")
-        if not quality_is_current(state, root, workspace):
+        if automation_level != "planning_only" and not quality_is_current(state, root, workspace):
             findings.append("Quality gate is not recorded as current and passed")
-        if not git_pr_is_current(state, root, workspace):
+        if automation_level == "commit_only" and not git_commit_is_current(state, root, workspace):
+            findings.append("Commit record is not current")
+        if automation_level == "pr_without_merge" and not git_pr_is_current(state, root, workspace):
             findings.append("PR record is not current")
-        if not cloud_is_current(state, root, workspace):
+        if automation_level == "pr_without_merge" and not cloud_is_current(state, root, workspace):
             findings.append("GitHub Actions cloud checks are not recorded as current and passed")
     if state.get("blockers"):
         findings.extend(f"Blocker: {item}" for item in state["blockers"])
@@ -1186,6 +1304,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     init = sub.add_parser("init")
     init.add_argument("--source", default="")
+    init.add_argument("--source-type", choices=sorted(SOURCE_TYPES), default="markdown")
     init.set_defaults(func=cmd_init)
 
     phase = sub.add_parser("set-phase")
@@ -1198,6 +1317,10 @@ def build_parser() -> argparse.ArgumentParser:
     branch = sub.add_parser("record-branch")
     branch.add_argument("--branch", required=True)
     branch.set_defaults(func=cmd_record_branch)
+
+    commit = sub.add_parser("record-commit")
+    commit.add_argument("--commit", default="")
+    commit.set_defaults(func=cmd_record_commit)
 
     review = sub.add_parser("record-review")
     review.add_argument("--role", required=True)

@@ -1,7 +1,7 @@
 # Codex Dev Loop · 从需求到 PR 的自动开发 loop
 
 ![Skill](https://img.shields.io/badge/Skill-Codex-111111?style=flat-square)
-![Version](https://img.shields.io/badge/Version-v0.2.0-blue?style=flat-square)
+![Version](https://img.shields.io/badge/Version-v0.2.1-blue?style=flat-square)
 ![Quality Gate](https://img.shields.io/badge/Quality%20Gate-required-0A7CFF?style=flat-square)
 ![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-supported-2088FF?style=flat-square)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
@@ -102,8 +102,8 @@ python "$env:USERPROFILE\.codex\skills\codex-dev-loop\scripts\configure_dev_loop
 7. Codex 按开发计划一小步一小步写代码。
 8. 每个开发单元都必须跑对应测试。
 9. 本地运行 `ai-code-quality-gate`，覆盖 lint、typecheck、test、Semgrep、CodeQL、Sonar、Qodana 等可用检查。
-10. 创建新分支，提交代码，推送到 GitHub。
-11. 创建 PR，等待 GitHub Actions 和 PR 级 AI review。
+10. 创建新分支并提交代码；如果是 `commit_only` 模式，记录 commit 后完成。
+11. 如果自动化范围允许，推送到 GitHub、创建 PR，并等待 GitHub Actions 和 PR 级 AI review。
 12. 把过程记录写回 `.codex/dev-loop/`。
 
 ### 需要你准备什么
@@ -180,6 +180,8 @@ python "$env:USERPROFILE\.codex\skills\codex-dev-loop\scripts\configure_dev_loop
 ```text
 ~/.codex/config/codex-dev-loop.json
 ```
+
+harness 会执行这些配置：不允许的来源类型会在 `init --source-type ...` 阶段被拒绝；`planning_only` 和 `commit_only` 会在各自完成点停止。
 
 配置完成后会输出类似说明：
 
@@ -430,8 +432,8 @@ Bad fit:
 7. Codex implements the development plan unit by unit.
 8. Each unit must pass its tests.
 9. The local `ai-code-quality-gate` runs lint, typecheck, tests, Semgrep, CodeQL, Sonar, Qodana, or the checks available in the target repository.
-10. Codex creates a new branch, commits, and pushes.
-11. Codex opens a PR and waits for GitHub Actions plus PR-level AI review.
+10. Codex creates a new branch and commits; in `commit_only` mode, it records the commit and completes.
+11. When automation scope allows it, Codex pushes, opens a PR, and waits for GitHub Actions plus PR-level AI review.
 12. The loop writes execution records under `.codex/dev-loop/`.
 
 ### Source Spec
@@ -494,6 +496,8 @@ The config is written to:
 ```text
 ~/.codex/config/codex-dev-loop.json
 ```
+
+The harness enforces these preferences: disabled source types are rejected during `init --source-type ...`, and `planning_only` / `commit_only` stop at their configured completion points.
 
 The wizard ends with a note like:
 

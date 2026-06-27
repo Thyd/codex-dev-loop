@@ -364,6 +364,7 @@ def write_fake_codex_home(tmp: Path) -> tuple[Path, Path]:
 
 
 def main() -> int:
+    os.environ["CODEX_DEV_LOOP_TEST_MODE"] = "1"
     configurator = Path(__file__).with_name("configure_dev_loop.py").resolve()
     validator = Path(__file__).with_name("validate_dev_loop_artifacts.py").resolve()
     harness = Path(__file__).with_name("dev_loop_harness.py").resolve()
@@ -473,10 +474,61 @@ def main() -> int:
         workspace, root = init_loop(harness, tmp, config_path=config_path)
         run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "plan_review"])
         record_plan_review(harness, workspace, root, tmp)
+        complete_planning_only = run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "complete"])
+        if complete_planning_only.returncode != 0:
+            print(complete_planning_only.stdout)
+            print("Expected planning_only automation config to allow completion after plan review.")
+            return 1
+        validate_planning_only = run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "validate", "--require-reviews", "--require-final"])
+        if validate_planning_only.returncode != 0:
+            print(validate_planning_only.stdout)
+            print("Expected planning_only final validation to require only planning records.")
+            return 1
         blocked_by_config = run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "branch"])
         if blocked_by_config.returncode == 0:
             print(blocked_by_config.stdout)
             print("Expected planning_only automation config to block branch phase.")
+            return 1
+
+    with tempfile.TemporaryDirectory(prefix="codex-dev-loop-source-type-test-") as raw_tmp:
+        tmp = Path(raw_tmp)
+        workspace = tmp / "repo"
+        workspace.mkdir()
+        init_git_repo(workspace)
+        source = write_source(tmp)
+        config_path = tmp / "markdown-only.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "automation_level": "pr_without_merge",
+                    "source_types": ["markdown"],
+                    "quality_profile": "standard",
+                    "test_failure_limit": 3,
+                    "risk_mode": "stop_and_ask",
+                }
+            ),
+            encoding="utf-8",
+        )
+        blocked_source = run(
+            [
+                sys.executable,
+                str(harness),
+                "--workspace",
+                str(workspace),
+                "--root",
+                str(workspace / ".codex" / "dev-loop"),
+                "--config",
+                str(config_path),
+                "init",
+                "--source",
+                str(source),
+                "--source-type",
+                "notion",
+            ]
+        )
+        if blocked_source.returncode == 0:
+            print(blocked_source.stdout)
+            print("Expected source_types config to block disallowed Notion source intake.")
             return 1
 
     with tempfile.TemporaryDirectory(prefix="codex-dev-loop-failures-test-") as raw_tmp:
@@ -537,6 +589,68 @@ def main() -> int:
         if failing_quality.returncode == 0:
             print(failing_quality.stdout)
             print("Expected failing ai-code-quality-gate process to block.")
+            return 1
+
+    with tempfile.TemporaryDirectory(prefix="codex-dev-loop-commit-only-test-") as raw_tmp:
+        tmp = Path(raw_tmp)
+        config_path = tmp / "commit-only.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "automation_level": "commit_only",
+                    "source_types": ["markdown", "notion"],
+                    "quality_profile": "light",
+                    "test_failure_limit": 3,
+                    "risk_mode": "stop_and_ask",
+                }
+            ),
+            encoding="utf-8",
+        )
+        workspace, root = init_loop(harness, tmp, config_path=config_path)
+        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "plan_review"])
+        record_plan_review(harness, workspace, root, tmp)
+        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "branch"])
+        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "record-branch", "--branch", "codex/test"])
+        (workspace / "app.txt").write_text("commit-only feature\n", encoding="utf-8")
+        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "implementation"])
+        run_test(harness, workspace, root, "dev-001", pass_command())
+        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "implementation_review"])
+        impl = record_review(harness, workspace, root, tmp, "implementation-reviewer", IMPLEMENTATION_REVIEW_BODY)
+        if impl.returncode != 0:
+            print(impl.stdout)
+            return 1
+        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "risk_review"])
+        risk = record_review(harness, workspace, root, tmp, "risk-reviewer", RISK_REVIEW_BODY)
+        if risk.returncode != 0:
+            print(risk.stdout)
+            return 1
+        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "quality_gate"])
+        quality = run_quality(harness, workspace, root, tmp / "commit-only-quality")
+        if quality.returncode != 0:
+            print(quality.stdout)
+            print("Expected commit_only quality gate to pass.")
+            return 1
+        must(["git", "add", "app.txt"], workspace)
+        must(["git", "commit", "-m", "feat: commit-only feature"], workspace)
+        record_commit = run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "record-commit"])
+        if record_commit.returncode != 0:
+            print(record_commit.stdout)
+            print("Expected record-commit to pass after quality gate and git commit.")
+            return 1
+        complete_commit_only = run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "complete"])
+        if complete_commit_only.returncode != 0:
+            print(complete_commit_only.stdout)
+            print("Expected commit_only automation config to allow completion after recorded commit.")
+            return 1
+        validate_commit_only = run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "validate", "--require-reviews", "--require-final"])
+        if validate_commit_only.returncode != 0:
+            print(validate_commit_only.stdout)
+            print("Expected commit_only final validation to require commit but not PR/cloud records.")
+            return 1
+        blocked_pr = run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "pr"])
+        if blocked_pr.returncode == 0:
+            print(blocked_pr.stdout)
+            print("Expected commit_only automation config to block PR phase.")
             return 1
 
     with tempfile.TemporaryDirectory(prefix="codex-dev-loop-happy-path-") as raw_tmp:
@@ -642,6 +756,33 @@ def main() -> int:
             json.dumps({"url": pr_url, "headRefName": "codex/test", "headRefOid": commit, "state": "OPEN"}),
             encoding="utf-8",
         )
+        production_env = {**os.environ}
+        production_env.pop("CODEX_DEV_LOOP_TEST_MODE", None)
+        simulated_pr_without_test_mode = run(
+            [
+                sys.executable,
+                str(harness),
+                "--workspace",
+                str(workspace),
+                "--root",
+                str(root),
+                "record-pr",
+                "--branch",
+                "codex/test",
+                "--commit",
+                commit,
+                "--pr-url",
+                pr_url,
+                "--evidence",
+                str(pr_evidence),
+                "--allow-local-simulation",
+            ],
+            env=production_env,
+        )
+        if simulated_pr_without_test_mode.returncode == 0:
+            print(simulated_pr_without_test_mode.stdout)
+            print("Expected local PR simulation to be rejected outside CODEX_DEV_LOOP_TEST_MODE.")
+            return 1
         bad_pr = run(
             [
                 sys.executable,
@@ -694,10 +835,46 @@ def main() -> int:
         run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "cloud_checks"])
         bad_cloud_evidence = tmp / "bad-cloud-evidence.json"
         bad_cloud_evidence.write_text(json.dumps([{"name": "ai-quality-gate", "state": "success"}]), encoding="utf-8")
+        simulated_cloud_without_test_mode = run(
+            [
+                sys.executable,
+                str(harness),
+                "--workspace",
+                str(workspace),
+                "--root",
+                str(root),
+                "record-cloud",
+                "--status",
+                "passed",
+                "--evidence",
+                str(bad_cloud_evidence),
+                "--allow-local-simulation",
+            ],
+            env=production_env,
+        )
+        if simulated_cloud_without_test_mode.returncode == 0:
+            print(simulated_cloud_without_test_mode.stdout)
+            print("Expected local cloud simulation to be rejected outside CODEX_DEV_LOOP_TEST_MODE.")
+            return 1
         bad_cloud = run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "record-cloud", "--status", "passed", "--evidence", str(bad_cloud_evidence), "--allow-local-simulation"])
         if bad_cloud.returncode == 0:
             print(bad_cloud.stdout)
             print("Expected incomplete cloud checks to fail.")
+            return 1
+        completed_cloud_evidence = tmp / "completed-cloud-evidence.json"
+        completed_cloud_evidence.write_text(
+            json.dumps(
+                [
+                    {"name": "ai-quality-gate", "state": "completed"},
+                    {"name": "qodo-pr-agent", "state": "success"},
+                ]
+            ),
+            encoding="utf-8",
+        )
+        completed_cloud = run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "record-cloud", "--status", "passed", "--evidence", str(completed_cloud_evidence), "--allow-local-simulation"])
+        if completed_cloud.returncode == 0:
+            print(completed_cloud.stdout)
+            print("Expected completed-without-success cloud check state to fail.")
             return 1
         cloud_evidence = tmp / "cloud-evidence.json"
         cloud_evidence.write_text(
