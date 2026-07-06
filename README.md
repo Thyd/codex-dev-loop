@@ -1,7 +1,7 @@
 # Codex Dev Loop · 从需求到 PR 的自动开发 loop
 
 ![Skill](https://img.shields.io/badge/Skill-Codex-111111?style=flat-square)
-![Version](https://img.shields.io/badge/Version-v0.2.2-blue?style=flat-square)
+![Version](https://img.shields.io/badge/Version-v0.3.0-blue?style=flat-square)
 ![Quality Gate](https://img.shields.io/badge/Quality%20Gate-required-0A7CFF?style=flat-square)
 ![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-supported-2088FF?style=flat-square)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
@@ -20,7 +20,13 @@
 
 ### 30 秒开始
 
-安装到本地 Codex skills 目录：
+安装到本地 Codex skills 目录（macOS / Linux）：
+
+```bash
+git clone https://github.com/Thyd/codex-dev-loop.git ~/.codex/skills/codex-dev-loop
+```
+
+Windows（PowerShell）：
 
 ```powershell
 git clone https://github.com/Thyd/codex-dev-loop.git "$env:USERPROFILE\.codex\skills\codex-dev-loop"
@@ -28,11 +34,19 @@ git clone https://github.com/Thyd/codex-dev-loop.git "$env:USERPROFILE\.codex\sk
 
 如果已经安装过，用这条更新：
 
+```bash
+git -C ~/.codex/skills/codex-dev-loop pull
+```
+
 ```powershell
 git -C "$env:USERPROFILE\.codex\skills\codex-dev-loop" pull
 ```
 
 初次使用前，运行 5 问配置：
+
+```bash
+python ~/.codex/skills/codex-dev-loop/scripts/configure_dev_loop.py
+```
 
 ```powershell
 python "$env:USERPROFILE\.codex\skills\codex-dev-loop\scripts\configure_dev_loop.py"
@@ -145,11 +159,23 @@ python "$env:USERPROFILE\.codex\skills\codex-dev-loop\scripts\configure_dev_loop
 
 方式二：手动命令安装。
 
+macOS / Linux：
+
+```bash
+git clone https://github.com/Thyd/codex-dev-loop.git ~/.codex/skills/codex-dev-loop
+```
+
+Windows（PowerShell）：
+
 ```powershell
 git clone https://github.com/Thyd/codex-dev-loop.git "$env:USERPROFILE\.codex\skills\codex-dev-loop"
 ```
 
 方式三：更新到最新版。
+
+```bash
+git -C ~/.codex/skills/codex-dev-loop pull
+```
 
 ```powershell
 git -C "$env:USERPROFILE\.codex\skills\codex-dev-loop" pull
@@ -160,6 +186,10 @@ git -C "$env:USERPROFILE\.codex\skills\codex-dev-loop" pull
 ### 初次配置
 
 首次使用前，建议运行一次配置向导：
+
+```bash
+python ~/.codex/skills/codex-dev-loop/scripts/configure_dev_loop.py
+```
 
 ```powershell
 python "$env:USERPROFILE\.codex\skills\codex-dev-loop\scripts\configure_dev_loop.py"
@@ -172,7 +202,7 @@ python "$env:USERPROFILE\.codex\skills\codex-dev-loop\scripts\configure_dev_loop
 | 你希望自动化到哪一步？ | 创建 PR 后停止 | 决定是否只规划、只提交，还是开 PR 后停止 |
 | 需求来源主要是什么？ | Markdown + Notion | 决定允许从哪些来源读取需求 |
 | 质量门严格度选哪种？ | 标准 | 决定强制哪些本地质量门和云端检查 |
-| 测试失败允许自动修复几次？ | 3 次 | 决定同一测试门失败几次后停止 |
+| 测试失败允许自动修复几次？ | 3 次 | 同一测试门连续失败超过重试次数后停止；通过一次即重置计数 |
 | 遇到高风险情况时怎么处理？ | 停止并询问 | 决定需求不清、缺 token、外部服务、安全/数据风险时是否继续 |
 
 配置会写入：
@@ -257,7 +287,7 @@ harness 会执行这些配置：不允许的来源类型会在 `init --source-ty
 - 测试闸门：每个开发单元都要跑测试，结果写入记录。
 - 质量闸门：调用 `ai-code-quality-gate`，已配置 profile gate 始终强制执行，`run-quality --require` 只能追加 gate。
 - PR 闸门：检查 GitHub Actions 和 PR 级 AI review，并确认 PR 仓库与本地 `origin` 一致。
-- 云端检查闸门：required check 用规范化后的精确名称匹配；非必需的可选检查失败不会阻断。
+- 云端检查闸门：required check 用规范化后的精确名称匹配，或匹配已知扫描器别名（如 `SonarCloud Code Analysis` 可满足 `sonar`）；非必需的可选检查失败不会阻断。
 - 指纹闸门：规划、评审、测试和质量报告都绑定当前文件状态，防止复用旧报告。
 
 ### 为什么要这么麻烦
@@ -357,7 +387,13 @@ The goal is straightforward: let Codex move development forward while tests, rev
 
 ### 30-Second Start
 
-Install into your local Codex skills directory:
+Install into your local Codex skills directory (macOS / Linux):
+
+```bash
+git clone https://github.com/Thyd/codex-dev-loop.git ~/.codex/skills/codex-dev-loop
+```
+
+Windows (PowerShell):
 
 ```powershell
 git clone https://github.com/Thyd/codex-dev-loop.git "$env:USERPROFILE\.codex\skills\codex-dev-loop"
@@ -365,11 +401,19 @@ git clone https://github.com/Thyd/codex-dev-loop.git "$env:USERPROFILE\.codex\sk
 
 Update an existing install:
 
+```bash
+git -C ~/.codex/skills/codex-dev-loop pull
+```
+
 ```powershell
 git -C "$env:USERPROFILE\.codex\skills\codex-dev-loop" pull
 ```
 
 Before the first run, configure the five core preferences:
+
+```bash
+python ~/.codex/skills/codex-dev-loop/scripts/configure_dev_loop.py
+```
 
 ```powershell
 python "$env:USERPROFILE\.codex\skills\codex-dev-loop\scripts\configure_dev_loop.py"
@@ -466,7 +510,11 @@ Clone https://github.com/Thyd/codex-dev-loop.git into ~/.codex/skills/codex-dev-
 After installation, verify SKILL.md, scripts/, references/, and agents/openai.yaml exist.
 ```
 
-Or install manually:
+Or install manually (macOS / Linux, then Windows PowerShell):
+
+```bash
+git clone https://github.com/Thyd/codex-dev-loop.git ~/.codex/skills/codex-dev-loop
+```
 
 ```powershell
 git clone https://github.com/Thyd/codex-dev-loop.git "$env:USERPROFILE\.codex\skills\codex-dev-loop"
@@ -477,6 +525,10 @@ Restart Codex after installation.
 ### First-Run Configuration
 
 Before the first run, start the setup wizard:
+
+```bash
+python ~/.codex/skills/codex-dev-loop/scripts/configure_dev_loop.py
+```
 
 ```powershell
 python "$env:USERPROFILE\.codex\skills\codex-dev-loop\scripts\configure_dev_loop.py"
@@ -555,7 +607,7 @@ The loop does not rely on a Git `pre-commit` hook. Its hooks are harness-enforce
 - Unit test gate.
 - Local quality gate through `ai-code-quality-gate`; configured profile gates always remain required, and `run-quality --require` can only add gates.
 - PR and GitHub Actions gate; PR evidence must point to the same GitHub repository as local `origin`.
-- Cloud check gate; required checks use exact canonical-name matching, while unrelated optional check failures do not block the loop.
+- Cloud check gate; required checks match by exact canonical name or known scanner aliases (for example `SonarCloud Code Analysis` satisfies `sonar`), while unrelated optional check failures do not block the loop.
 - Fingerprint gate that prevents stale reports from being reused.
 
 ### Repository Layout

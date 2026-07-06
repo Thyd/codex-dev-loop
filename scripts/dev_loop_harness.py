@@ -37,9 +37,19 @@ REVIEW_ROLES = {"plan-reviewer", "implementation-reviewer", "risk-reviewer"}
 PROTECTED_BRANCHES = {"main", "master", "develop"}
 CORE_ARTIFACTS = ["source.md", "technical-design.md", "test-plan.md", "risk-analysis.md", "development-plan.md", "decision-log.md"]
 FINAL_ARTIFACTS = ["final-report.md", "pr-body.md", "quality-gate-summary.md"]
-REQUIRED_CLOUD_CHECKS = ["ai-quality-gate", "semgrep", "codeql", "sonar", "qodana", "subagent-alignment"]
 AI_REVIEW_CHECK_ALIASES = ["qodo", "coderabbit", "pr-agent", "ai-review"]
-REQUIRED_QUALITY_GATES = ["lint", "typecheck", "test", "semgrep", "codeql", "sonar", "qodana", "subagent-alignment"]
+# Real-world GitHub check names rarely equal the canonical gate name (for
+# example "SonarCloud Code Analysis" for the sonar gate). Each required check
+# also matches when one of these single-token vendor aliases appears as a
+# hyphen-delimited token in the canonical check name. Loop-owned checks such
+# as ai-quality-gate and subagent-alignment intentionally have no aliases and
+# still require an exact canonical match.
+SCANNER_CHECK_ALIASES = {
+    "sonar": ["sonar", "sonarcloud", "sonarqube"],
+    "qodana": ["qodana"],
+    "codeql": ["codeql"],
+    "semgrep": ["semgrep"],
+}
 DEFAULT_CODEX_HOME = Path.home() / ".codex"
 DEFAULT_CONFIG_PATH = DEFAULT_CODEX_HOME / "config" / "codex-dev-loop.json"
 DEFAULT_TEST_GATE_SCRIPT = DEFAULT_CODEX_HOME / "skills" / "automated-dev-executor" / "scripts" / "test_gate.py"
@@ -218,7 +228,10 @@ def read_state(root: Path) -> dict:
 def write_state(root: Path, state: dict) -> None:
     root.mkdir(parents=True, exist_ok=True)
     state["updated_at"] = now()
-    (root / "loop-state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
+    path = root / "loop-state.json"
+    tmp_path = path.with_name(path.name + ".tmp")
+    tmp_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    os.replace(tmp_path, path)
 
 
 def phase(state: dict) -> str:
@@ -823,10 +836,35 @@ def is_ai_review_check(name: str) -> bool:
     return any(alias in canonical for alias in AI_REVIEW_CHECK_ALIASES)
 
 
+def check_satisfies_required(check_name: str, required: str) -> bool:
+    canonical = canonical_check_name(check_name)
+    required_canonical = canonical_check_name(required)
+    if canonical == required_canonical:
+        return True
+    aliases = SCANNER_CHECK_ALIASES.get(required_canonical, [])
+    if not aliases:
+        return False
+    tokens = set(canonical.split("-"))
+    return any(alias in tokens for alias in aliases)
+
+
+def matching_required_checks(checks: list[dict], required: str) -> list[dict]:
+    return [item for item in checks if check_satisfies_required(item["name"], required)]
+
+
 def run_gh_json(workspace: Path, gh: str, args: list[str]) -> object:
-    result = run_child([gh, *args], workspace)
+    # Keep stderr separate: gh writes notices, update hints, and progress to
+    # stderr, and merging streams would corrupt the JSON on stdout.
+    result = subprocess.run(
+        [gh, *args],
+        cwd=str(workspace),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
     if result.returncode != 0:
-        raise SystemExit(result.stdout.strip() or f"{gh} {' '.join(args)} failed")
+        message = result.stderr.strip() or result.stdout.strip() or f"{gh} {' '.join(args)} failed"
+        raise SystemExit(message)
     try:
         return json.loads(result.stdout)
     except json.JSONDecodeError as exc:
@@ -873,16 +911,19 @@ def validate_cloud_evidence(data: object, required_checks: list[str], require_ai
         if not name:
             raise SystemExit("GitHub Actions evidence contains a check without a name.")
         checks.append({"name": name, "state": state, **item})
-    by_canonical_name = {canonical_check_name(item["name"]): item for item in checks}
-    missing = [check for check in required_checks if canonical_check_name(check) not in by_canonical_name]
+    matched: dict[str, list[dict]] = {check: matching_required_checks(checks, check) for check in required_checks}
+    missing = [check for check, items in matched.items() if not items]
     if missing:
         raise SystemExit("GitHub Actions evidence is missing required checks: " + ", ".join(missing))
     ai_review_checks = [item for item in checks if is_ai_review_check(item["name"])]
     if require_ai_review and not ai_review_checks:
         raise SystemExit("GitHub Actions evidence must include Qodo PR-Agent, CodeRabbit, or another AI review check.")
-    required_names = {canonical_check_name(check) for check in required_checks}
-    must_pass = [item for name, item in by_canonical_name.items() if name in required_names]
-    must_pass.extend(ai_review_checks)
+    must_pass: list[dict] = []
+    for items in matched.values():
+        for item in items:
+            if item not in must_pass:
+                must_pass.append(item)
+    must_pass.extend(item for item in ai_review_checks if item not in must_pass)
     failing = sorted({item["name"] for item in must_pass if not passing_check(item)})
     if failing:
         raise SystemExit("GitHub Actions checks are not all passing: " + ", ".join(failing))
@@ -1020,13 +1061,28 @@ def record_test_meta(root: Path, workspace: Path, state: dict, unit: str, meta_p
         "recorded_at": now(),
     }
     attempts.append(record)
-    failed_count = sum(1 for item in attempts if item.get("status") != "passed")
+    # test_failure_limit is the number of automatic retries allowed after a
+    # failure: 0 blocks on the first failure, 3 blocks on the fourth
+    # consecutive failure. Counting is consecutive (a pass resets it) and also
+    # resets when a blocker is explicitly resolved, so an early stumble does
+    # not count against a later, unrelated regression.
+    reset_marker = state.get("failure_counter_reset_at", "")
+    consecutive_failures = 0
+    for item in reversed(attempts):
+        if item.get("status") == "passed":
+            break
+        if reset_marker and item.get("recorded_at", "") <= reset_marker:
+            break
+        consecutive_failures += 1
     configured_limit = loop_config(state)["test_failure_limit"]
-    stop_after = 1 if configured_limit == 0 else configured_limit
-    if failed_count >= stop_after and meta["status"] != "passed":
-        add_blocker(state, f"{unit} test gate failed {failed_count} time(s); configured limit is {configured_limit}")
+    stop_after = configured_limit + 1
+    if consecutive_failures >= stop_after and meta["status"] != "passed":
+        add_blocker(
+            state,
+            f"{unit} test gate failed {consecutive_failures} consecutive time(s); configured retry limit is {configured_limit}",
+        )
         write_state(root, state)
-        print(f"{unit}: failed {failed_count} time(s)")
+        print(f"{unit}: failed {consecutive_failures} consecutive time(s)")
         return 1
     write_state(root, state)
     print(f"{unit}: {meta['status']} attempt {len(attempts)}")
@@ -1038,6 +1094,7 @@ def cmd_run_test(args: argparse.Namespace) -> int:
     workspace = Path(args.workspace).resolve()
     state = read_state(root)
     assert_phase(state, {"implementation"})
+    assert_no_blockers(state)
     script = Path(args.test_gate_script)
     if script.resolve() != DEFAULT_TEST_GATE_SCRIPT.resolve():
         assert_test_mode("Caller-supplied test gate scripts")
@@ -1322,6 +1379,44 @@ def cmd_record_cloud(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_resolve_blocker(args: argparse.Namespace) -> int:
+    """Clear recorded blockers so the loop can recover without hand-editing state.
+
+    Every phase transition asserts there are no blockers, so without this
+    command a blocked loop could never legally backtrack. Resolution requires
+    a written reason, is appended to blocker-resolutions.md, and is kept as an
+    auditable record in loop state. The log is intentionally a separate file:
+    decision-log.md participates in the plan fingerprint, so appending there
+    would invalidate every recorded review as a side effect.
+    """
+    root = Path(args.root)
+    state = read_state(root)
+    blockers = state.get("blockers") or []
+    if not blockers:
+        print("No blockers to resolve.")
+        return 0
+    reason = args.reason.strip()
+    if len(reason) < 10:
+        raise SystemExit("--reason must describe how the blocker was addressed (at least 10 characters).")
+    resolved_at = now()
+    resolutions = state.setdefault("blocker_resolutions", [])
+    resolutions.append({"blockers": list(blockers), "reason": reason, "resolved_at": resolved_at})
+    state["blockers"] = []
+    state["failure_counter_reset_at"] = resolved_at
+    resolution_log = root / "blocker-resolutions.md"
+    if not resolution_log.exists():
+        resolution_log.write_text("# Blocker Resolutions\n", encoding="utf-8")
+    entry_lines = [f"\n## Blocker Resolution ({resolved_at})\n\n"]
+    entry_lines.extend(f"- Resolved: {item}\n" for item in blockers)
+    entry_lines.append(f"- Reason: {reason}\n")
+    with resolution_log.open("a", encoding="utf-8") as handle:
+        handle.write("".join(entry_lines))
+    write_state(root, state)
+    print(f"Resolved {len(blockers)} blocker(s); reason recorded in blocker-resolutions.md.")
+    print("Backtrack with set-phase to redo the invalidated work before advancing again.")
+    return 0
+
+
 def cmd_validate(args: argparse.Namespace) -> int:
     root = Path(args.root)
     workspace = Path(args.workspace).resolve()
@@ -1435,6 +1530,10 @@ def build_parser() -> argparse.ArgumentParser:
     cloud.add_argument("--extra-required-check", action="append", default=[])
     cloud.add_argument("--allow-local-simulation", action="store_true")
     cloud.set_defaults(func=cmd_record_cloud)
+
+    resolve = sub.add_parser("resolve-blocker")
+    resolve.add_argument("--reason", required=True, help="How the blocker was addressed; recorded in decision-log.md.")
+    resolve.set_defaults(func=cmd_resolve_blocker)
 
     validate = sub.add_parser("validate")
     validate.add_argument("--require-reviews", action="store_true")

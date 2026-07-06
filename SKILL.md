@@ -5,7 +5,7 @@ description: Run an end-to-end Codex autonomous development loop from a Notion p
 
 # Codex Dev Loop
 
-Current version: 0.2.2
+Current version: 0.3.0
 
 ## Operating Contract
 
@@ -56,7 +56,7 @@ The five questions are:
 1. Automation level: `pr_without_merge` (default), `commit_only`, or `planning_only`.
 2. Source types: `markdown + notion` (default), `markdown`, or `notion`.
 3. Quality profile: `standard` (default), `strict`, or `light`.
-4. Test failure limit: `3` (default), `2`, `1`, or `0` for stop on first failure.
+4. Test failure limit: number of automatic retries after a failure. `3` (default) blocks on the fourth consecutive failure; `0` blocks on the first failure. A passing run resets the counter.
 5. Risk mode: `stop_and_ask` (default), `serious_only`, or `best_effort`.
 
 After saving configuration, respond with a concise confirmation such as:
@@ -125,6 +125,13 @@ python <skill-dir>/scripts/dev_loop_harness.py --root .codex/dev-loop set-phase 
 ```
 
 The harness rejects illegal jumps such as `planning -> complete`.
+When the loop is blocked, first resolve the blocker with a written reason before backtracking:
+
+```bash
+python <skill-dir>/scripts/dev_loop_harness.py --root .codex/dev-loop resolve-blocker --reason "<what was fixed>"
+```
+
+Resolutions are appended to `.codex/dev-loop/blocker-resolutions.md` and kept in loop state; after resolving, backtrack with `set-phase` and redo the invalidated work.
 When the loop backtracks to an earlier phase, the harness clears downstream test, review, quality, PR, and cloud-check state so stale passes cannot be reused.
 
 Before asking Subagents to review current artifacts, capture evidence fingerprints:
@@ -199,10 +206,10 @@ Use `$automated-dev-executor` for implementation:
 
 - Work on exactly one unit from `.codex/dev-loop/development-plan.md`.
 - Run the unit's forced test gate.
-- Retry a failing test gate only up to the configured failure limit.
+- Retry a failing test gate only up to the configured retry limit; the counter tracks consecutive failures and resets on a pass.
 - Run and record every attempt with `scripts/dev_loop_harness.py run-test --unit <unit-id> --command "<test command>"`.
 - Do not advance beyond implementation until every `## Unit dev-*` in the development plan has latest test status `passed`.
-- After the configured failure limit is reached, stop with a blocker.
+- After the configured retry limit is exceeded, stop with a blocker.
 - Record command, result, timestamp, and log path.
 - Do not skip tests or mark a failing unit complete.
 
@@ -274,7 +281,7 @@ python <skill-dir>/scripts/dev_loop_harness.py --root .codex/dev-loop record-com
 - Include design, tests, risk, quality gate summary, and Subagent review summary in the PR body.
 - Inspect GitHub Actions checks when available and record the result.
 - Record branch, commit, and PR URL with `scripts/dev_loop_harness.py record-pr`; the harness verifies them with `gh pr view` and checks that the PR repository matches local `origin`.
-- Record cloud checks with `scripts/dev_loop_harness.py record-cloud --status passed`; the harness verifies them with `gh pr checks`, requires exact canonical names for required checks, and does not let unrelated optional failures block the loop.
+- Record cloud checks with `scripts/dev_loop_harness.py record-cloud --status passed`; the harness verifies them with `gh pr checks`, matches required checks by exact canonical name or by known scanner aliases (for example `SonarCloud Code Analysis` satisfies `sonar`), and does not let unrelated optional failures block the loop.
 - `record-pr --allow-local-simulation` and `record-cloud --allow-local-simulation` are self-test only and require `CODEX_DEV_LOOP_TEST_MODE=1`.
 
 Stop if:
@@ -316,7 +323,7 @@ Stop and report a blocker when:
 
 - Requirements are unclear.
 - Plan review returns `block`.
-- Test gate reaches the configured failure limit for the same unit.
+- Test gate exceeds the configured retry limit with consecutive failures on the same unit.
 - `$ai-code-quality-gate` fails.
 - Subagent alignment returns anything other than `Decision: pass`.
 - Risk review finds architecture, security, data, migration, compatibility, or external-service risk that needs a user decision.

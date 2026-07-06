@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.3.0 - 2026-07-06
+
+### Added
+
+- `resolve-blocker --reason` harness command: blocked loops previously had no legal recovery path because every phase transition asserts no blockers exist; resolutions are appended to `blocker-resolutions.md` and kept in loop state for audit.
+- Bash install and configuration commands in the README alongside the existing PowerShell commands.
+
+### Changed
+
+- `test_failure_limit` now means the number of automatic retries after a failure: `0` blocks on the first failure and `3` blocks on the fourth consecutive failure, matching the configuration wizard wording. The counter tracks consecutive failures, resets on a pass, and resets after `resolve-blocker`.
+- Required GitHub Actions checks now also match known scanner aliases as hyphen-delimited tokens (`sonar`/`sonarcloud`/`sonarqube`, `qodana`, `codeql`, `semgrep`), so real-world check names such as `SonarCloud Code Analysis` satisfy the strict profile. Loop-owned checks such as `ai-quality-gate` still require an exact canonical match.
+- `run-test` refuses to run while the loop is blocked.
+- Loop state is written atomically (temp file + rename) so an interrupted command cannot corrupt `loop-state.json`.
+
+### Fixed
+
+- `gh` invocations no longer merge stderr into stdout; CLI notices and update hints previously could corrupt JSON parsing of `gh pr view` / `gh pr checks` output.
+- Removed unused `REQUIRED_CLOUD_CHECKS` and `REQUIRED_QUALITY_GATES` constants that duplicated (and could drift from) the quality-profile definitions.
+
+
 ## 0.2.2 - 2026-06-27
 
 ### Fixed

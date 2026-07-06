@@ -558,9 +558,56 @@ def main() -> int:
         failed = None
         for _ in range(3):
             failed = run_test(harness, workspace, root, "dev-001", fail_command())
-        if failed is None or failed.returncode == 0:
+        if failed is None or failed.returncode != 0:
             print(failed.stdout if failed else "")
-            print("Expected third failed test attempt to block.")
+            print("Expected three failures to stay within the default retry limit of 3.")
+            return 1
+        failed = run_test(harness, workspace, root, "dev-001", fail_command())
+        if failed.returncode == 0:
+            print(failed.stdout)
+            print("Expected the fourth consecutive failure to exceed the retry limit and block.")
+            return 1
+        blocked_test = run_test(harness, workspace, root, "dev-001", fail_command())
+        if blocked_test.returncode == 0:
+            print(blocked_test.stdout)
+            print("Expected run-test to be rejected while the loop is blocked.")
+            return 1
+        no_reason = run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "resolve-blocker", "--reason", "short"])
+        if no_reason.returncode == 0:
+            print(no_reason.stdout)
+            print("Expected resolve-blocker to reject a trivial reason.")
+            return 1
+        resolved = run(
+            [
+                sys.executable,
+                str(harness),
+                "--workspace",
+                str(workspace),
+                "--root",
+                str(root),
+                "resolve-blocker",
+                "--reason",
+                "Fixed the failing dependency pin so the unit test can run again.",
+            ]
+        )
+        if resolved.returncode != 0:
+            print(resolved.stdout)
+            print("Expected resolve-blocker to clear the blocker with a written reason.")
+            return 1
+        if not (root / "blocker-resolutions.md").exists():
+            print("Expected resolve-blocker to append to blocker-resolutions.md.")
+            return 1
+        state_data = json.loads((root / "loop-state.json").read_text(encoding="utf-8"))
+        if state_data.get("blockers"):
+            print("Expected blockers to be empty after resolve-blocker.")
+            return 1
+        if not state_data.get("blocker_resolutions"):
+            print("Expected blocker_resolutions to be recorded in state.")
+            return 1
+        after_resolve = run_test(harness, workspace, root, "dev-001", fail_command())
+        if after_resolve.returncode != 0:
+            print(after_resolve.stdout)
+            print("Expected the failure counter to reset after resolve-blocker.")
             return 1
 
     with tempfile.TemporaryDirectory(prefix="codex-dev-loop-all-units-test-") as raw_tmp:
@@ -981,10 +1028,10 @@ def main() -> int:
             json.dumps(
                 [
                     {"name": "ai-quality-gate", "state": "success"},
-                    {"name": "semgrep", "state": "success"},
-                    {"name": "codeql", "state": "success"},
-                    {"name": "sonar", "state": "success"},
-                    {"name": "qodana", "state": "success"},
+                    {"name": "Semgrep OSS Scan", "state": "success"},
+                    {"name": "CodeQL", "state": "success"},
+                    {"name": "SonarCloud Code Analysis", "state": "success"},
+                    {"name": "Qodana Scan", "state": "success"},
                     {"name": "subagent-alignment", "state": "success"},
                     {"name": "qodo-pr-agent", "state": "success"},
                     {"name": "optional-flaky-check", "state": "failure"},
