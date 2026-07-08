@@ -1657,6 +1657,79 @@ def standalone_tests() -> int:
     if standalone_ship_and_spec_tests() != 0:
         return 1
 
+    if standalone_upgrade_path_test() != 0:
+        return 1
+
+    return 0
+
+
+def standalone_upgrade_path_test() -> int:
+    """The escalation story: a user runs dev-tdd standalone, then upgrades to
+    the full loop; adopt-evidence absorbs the fingerprint-current green so the
+    unit gate is satisfied without re-running the test."""
+    harness = Path(__file__).with_name("dev_loop_harness.py").resolve()
+
+    with tempfile.TemporaryDirectory(prefix="codex-dev-loop-upgrade-") as raw_tmp:
+        tmp = Path(raw_tmp)
+        workspace = tmp / "repo"
+        workspace.mkdir()
+        init_git_repo(workspace)  # app.txt committed, on branch codex/test
+        root = workspace / ".codex" / "dev-loop"
+
+        def hp(*args: str) -> subprocess.CompletedProcess:
+            return run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), *args])
+
+        # 1) Standalone dev-tdd for a unit named dev-001 (no loop exists yet).
+        red = standalone(harness, workspace, "standalone-test", "--label", "dev-001", "--stage", "red", "--command", fail_command())
+        if red.returncode != 0:
+            print(red.stdout)
+            print("Expected standalone red to record before the loop exists.")
+            return 1
+        green = standalone(harness, workspace, "standalone-test", "--label", "dev-001", "--stage", "green", "--command", pass_command())
+        if green.returncode != 0:
+            print(green.stdout)
+            print("Expected standalone green to record before the loop exists.")
+            return 1
+
+        # 2) Escalate: start the full loop in the same workspace.
+        source = write_source(tmp)
+        if hp("init", "--source", str(source)).returncode != 0:
+            print("Expected loop init to succeed on the escalation path.")
+            return 1
+        if hp("set-phase", "planning").returncode != 0:
+            print("Expected intake -> planning to succeed.")
+            return 1
+        write_artifacts(root)
+        (root / "development-plan.md").write_text(DEV_PLAN_TDD_RED, encoding="utf-8")
+        hp("set-phase", "plan_review")
+        record_plan_review(harness, workspace, root, tmp)
+        hp("set-phase", "branch")
+        hp("record-branch", "--branch", "codex/test")
+        hp("set-phase", "implementation")
+
+        # 3) Adopt the standalone evidence; the unit gate should then be met
+        #    without any loop run-test.
+        adopt = hp("adopt-evidence")
+        if adopt.returncode != 0 or "dev-001" not in adopt.stdout:
+            print(adopt.stdout)
+            print("Expected adopt-evidence to adopt the standalone green for dev-001.")
+            return 1
+        must_record_spec_merge(harness, workspace, root)
+        advanced = hp("set-phase", "implementation_review")
+        if advanced.returncode != 0:
+            print(advanced.stdout)
+            print("Expected the adopted red+green evidence to satisfy the unit gate.")
+            return 1
+
+        # 4) A tree change after adoption must stale the adopted green.
+        hp("set-phase", "implementation")
+        (workspace / "app.txt").write_text("changed after adoption\n", encoding="utf-8")
+        stale = hp("set-phase", "implementation_review")
+        if stale.returncode == 0:
+            print(stale.stdout)
+            print("Expected a post-adoption tree change to stale the adopted evidence.")
+            return 1
+
     return 0
 
 

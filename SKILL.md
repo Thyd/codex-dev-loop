@@ -44,6 +44,23 @@ Use this skill to drive a full local harness plus GitHub Actions loop.
 
 The harness is agent-neutral. On OpenAI Codex, follow this file as-is. On Claude Code, install per [adapters/claude-code/SKILL.md](adapters/claude-code/SKILL.md): set `CODEX_DEV_LOOP_HOME=~/.claude`, spawn reviewers and unit-implementers with the Agent tool instead of `multi_agent_v1`, and rely on the bundled gate fallbacks when the companion skills are absent. Gate-script overrides (`test_gate_script`, `quality_gate_script`) are honored only from the home-anchored config file.
 
+## Composition — This Loop Orchestrates Composable Sub-Skills
+
+This skill is the full-loop **orchestrator**. Each phase's methodology is defined once in a focused `dev-*` sub-skill; the orchestrator runs them in sequence under the harness state machine, which keeps all gates and evidence in `.codex/dev-loop/` (loop mode). The sub-skills also run standalone for small tasks — see [references/routing.md](references/routing.md) to decide whether a task needs the full loop at all.
+
+| Phase | Methodology (canonical source) | In the loop |
+| --- | --- | --- |
+| Intake / clarification | [skills/dev-clarify](skills/dev-clarify/SKILL.md) | intake phase + `check-spec` gate on `source.md` |
+| Planning | [skills/dev-plan](skills/dev-plan/SKILL.md) | planning artifacts under `.codex/dev-loop/` |
+| Reviews | [skills/dev-review](skills/dev-review/SKILL.md) | `record-review` (loop-fingerprinted) |
+| Implementation | [skills/dev-tdd](skills/dev-tdd/SKILL.md) + [tdd-parallel-units.md](references/tdd-parallel-units.md) | `run-test --stage red/green`, `record-test`, `verify-units` |
+| Spec consolidation | [skills/dev-spec](skills/dev-spec/SKILL.md) | `record-spec-merge` |
+| Ship | [skills/dev-ship](skills/dev-ship/SKILL.md) | `record-branch/commit/pr/cloud` |
+
+Key rule: **methodology lives in the sub-skill; enforcement lives in the harness.** When a phase's discipline is unclear, read the sub-skill. The loop always uses the loop-mode harness commands (bound to plan/workspace fingerprints), never the `standalone-*` commands.
+
+**Upgrade path.** If a task started as a standalone `dev-tdd` chain and grew into a full loop, run `adopt-evidence` during the implementation phase: it absorbs each standalone green whose workspace fingerprint still matches the current tree (re-stamping the red-before-green evidence to the current plan), so verified units are not re-run. Units without current standalone evidence run normally.
+
 ## First-Run Configuration
 
 Before the first full run, check whether this file exists:

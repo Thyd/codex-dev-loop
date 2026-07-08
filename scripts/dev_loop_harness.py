@@ -2451,6 +2451,82 @@ def cmd_ship_check(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_adopt_evidence(args: argparse.Namespace) -> int:
+    """Absorb standalone dev-tdd evidence into a running loop (the upgrade path).
+
+    When a user starts with dev-tdd and later escalates to the full loop, this
+    imports each standalone green that still matches the current tree so the
+    unit's test gate does not have to be re-run. Adoption is fingerprint-gated:
+    a standalone green is only adopted when its workspace fingerprint equals the
+    loop's current workspace fingerprint (the tree has not changed since). For a
+    red-mode unit the matching failing red attempt is imported too, re-stamped
+    to the current plan fingerprint, so the red-before-green gate is satisfied
+    honestly. Units without a current standalone green are left for a normal run.
+    """
+    root = Path(args.root)
+    workspace = Path(args.workspace).resolve()
+    state = read_state(root)
+    assert_phase(state, {"implementation"})
+    assert_no_blockers(state)
+    config = loop_config(state)
+    ledger_path = resolve_evidence_dir(workspace, config) / "tdd" / "ledger.json"
+    if not ledger_path.exists():
+        print(f"No standalone tdd evidence to adopt at {ledger_path}.")
+        return 0
+    ledger = load_ledger(ledger_path, "tdd")
+    current_plan = plan_fingerprint(root)
+    current_workspace = workspace_fingerprint(workspace)
+    adopted: list[str] = []
+    skipped: list[str] = []
+    for unit in planned_units(root):
+        attempts = ledger.get("attempts", {}).get(unit, [])
+        green = None
+        for item in attempts:
+            if item.get("stage") == "green" and item.get("status") == "passed" and item.get("workspace_fingerprint") == current_workspace:
+                green = item
+        if green is None:
+            skipped.append(unit)
+            continue
+        loop_attempts = state.setdefault("test_attempts", {}).setdefault(unit, [])
+        if unit_tdd_mode(root, unit) == "red":
+            red = next((item for item in attempts if item.get("stage") == "red" and item.get("status") == "failed"), None)
+            if red is not None:
+                loop_attempts.append(
+                    {
+                        "status": "failed",
+                        "stage": "red",
+                        "command": red.get("command", ""),
+                        "exit_code": red.get("exit_code"),
+                        "log": red.get("log", ""),
+                        "meta": red.get("meta", ""),
+                        "plan_fingerprint": current_plan,
+                        "workspace_fingerprint": current_workspace,
+                        "recorded_at": now(),
+                        "adopted_from": "standalone",
+                    }
+                )
+        loop_attempts.append(
+            {
+                "status": "passed",
+                "stage": "green",
+                "command": green.get("command", ""),
+                "exit_code": green.get("exit_code"),
+                "log": green.get("log", ""),
+                "meta": green.get("meta", ""),
+                "plan_fingerprint": current_plan,
+                "workspace_fingerprint": current_workspace,
+                "recorded_at": now(),
+                "adopted_from": "standalone",
+            }
+        )
+        adopted.append(unit)
+    write_state(root, state)
+    print(f"Adopted standalone green evidence for {len(adopted)} unit(s): {', '.join(adopted) or 'none'}.")
+    if skipped:
+        print(f"No current standalone green for {len(skipped)} unit(s) (run their gate normally): {', '.join(skipped)}.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Codex dev loop state helper.")
     parser.add_argument("--root", default=".codex/dev-loop")
@@ -2590,6 +2666,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     ship = sub.add_parser("ship-check")
     ship.set_defaults(func=cmd_ship_check)
+
+    adopt = sub.add_parser("adopt-evidence")
+    adopt.set_defaults(func=cmd_adopt_evidence)
     return parser
 
 

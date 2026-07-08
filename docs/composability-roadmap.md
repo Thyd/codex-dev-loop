@@ -196,7 +196,7 @@
 |---|---|---|---|
 | **P1** | harness 加 standalone 模式 + `guard-check` + `check-spec`；抽出三个最高频子 skill：**dev-tdd、dev-review、dev-clarify** | 纯增量，不动现有 loop；先验证「薄皮 + core」模式，只放三个技能便于把触发边界调准 | ✅ 已完成（2026-07-07） |
 | **P2** | **dev-ship、dev-spec（含 bootstrap）、dev-plan** + `references/routing.md` | bootstrap 是唯一的全新功能点 | ✅ 已完成（2026-07-07） |
-| **P3** | 编排器 SKILL.md 重写为组合调用；`adopt-evidence` 证据吸收；self_test 覆盖 standalone 与升链 | 收口，单体 → 组合的正式切换 | 待开始 |
+| **P3** | 编排器 SKILL.md 重写为组合调用；`adopt-evidence` 证据吸收；self_test 覆盖 standalone 与升链 | 收口，单体 → 组合的正式切换 | ✅ 已完成（2026-07-07） |
 | **P4（可选）** | 借鉴 Superpowers 新增 systematic-debugging（loop 之外的独立方法论技能）；`install_skills.py` | 生态扩展 | 待开始 |
 
 ### P1 落地记录（2026-07-07）
@@ -206,6 +206,10 @@ harness core 新增命令：`version`（`--require` 版本握手，`CORE_VERSION
 ### P2 落地记录（2026-07-07）
 
 harness core 新增：`standalone-test --mode red|regression-only`（regression-only 记录绿而不要求红，对应 loop 的 regression-only 单元豁免，证据如实标注 mode）；`ship-check`（dev-ship 底线闸门：git 仓库 + 非保护分支 + TDD ledger 有针对**当前树**的绿证据，指纹匹配才放行）；`check-spec-delta`（standalone 规格 delta 校验，与 loop 的 `record-spec-merge` 共用抽出的 `spec_delta_baseline_problems()`）。子 skill：`skills/dev-plan`（复用 `validate_dev_loop_artifacts.py` 独立校验，无新 harness 逻辑）、`skills/dev-spec`（bootstrap 引导 + delta + check-spec-delta）、`skills/dev-ship`（ship-check + git/gh 交付）。新增 `references/routing.md`（决策树 + tripwire + 底线闸门集 + 单一事实源，所有 skill 共享）。self_test 扩展覆盖 regression-only、ship-check 四态、check-spec-delta 三态，全绿。
+
+### P3 落地记录（2026-07-07）
+
+harness core 新增 `adopt-evidence`（loop implementation 阶段吸收 standalone dev-tdd 证据）：仅收 standalone green 的 workspace 指纹 == 当前 loop 工作区指纹的单元（树未变才收），red 模式单元连带导入失败的红证据并重新绑定当前 plan 指纹，使红先于绿门被诚实满足；无当前 standalone 绿的单元留待正常跑。编排器 [SKILL.md](../SKILL.md) 新增「Composition」段：各阶段方法论指向对应 `dev-*` 子 skill 作为单一来源（方法论在子 skill、强制在 harness），loop 始终用 loop 模式命令而非 `standalone-*`，并说明升级路径用 `adopt-evidence`。self_test 新增完整升链路径测试（standalone dev-tdd → 启动 loop → adopt-evidence → 满足单元门 → 吸收后改树使证据失效），全绿。至此单体 → 组合的切换收口。
 
 **每个阶段的完成标准**：`python scripts/self_test.py` 全绿；`codex-dev-loop-0.x.0-changes.patch` 能干净地打在上一版 zip 上并复跑 self_test 通过（沿用 0.4.0 的交付验证流程）。
 
