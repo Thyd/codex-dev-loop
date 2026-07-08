@@ -96,7 +96,7 @@ BUNDLED_QUALITY_GATE_SCRIPT = Path(__file__).resolve().parent / "quality_gate_fa
 TEST_MODE_ENV = "CODEX_DEV_LOOP_TEST_MODE"
 # Harness core version for the composable sub-skills (dev-tdd, dev-review, ...).
 # Sub-skills declare a minimum and can verify it with `version --require`.
-CORE_VERSION = "0.5.0-dev"
+CORE_VERSION = "0.5.0"
 # Standalone evidence lives inside the workspace so it stays visible to git and
 # reviewers, exactly like loop evidence. The canonical loop dir is what the
 # single-source-of-truth guard watches for an in-flight loop.

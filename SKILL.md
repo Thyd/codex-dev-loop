@@ -5,7 +5,7 @@ description: Run an end-to-end autonomous development loop from a Notion page, l
 
 # Codex Dev Loop
 
-Current version: 0.4.0
+Current version: 0.5.0
 
 ## Operating Contract
 

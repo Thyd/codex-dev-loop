@@ -1,7 +1,7 @@
 # Codex Dev Loop · 从需求到 PR 的自动开发 loop
 
 ![Skill](https://img.shields.io/badge/Skill-Codex%20%7C%20Claude%20Code-111111?style=flat-square)
-![Version](https://img.shields.io/badge/Version-v0.4.0-blue?style=flat-square)
+![Version](https://img.shields.io/badge/Version-v0.5.0-blue?style=flat-square)
 ![Quality Gate](https://img.shields.io/badge/Quality%20Gate-required-0A7CFF?style=flat-square)
 ![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-supported-2088FF?style=flat-square)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
@@ -81,6 +81,30 @@ cp ~/.claude/skills/codex-dev-loop/adapters/claude-code/SKILL.md ~/.claude/skill
 请使用 $codex-dev-loop，我现在只有一个粗略想法：<你的想法>。
 用 --draft 启动，先通过提问把目标和验收标准聊清楚，再走完整流程。
 ```
+
+### 可组合子 skill（小任务不必扛全套）
+
+完整 loop 之外，每个阶段也是一个能**独立触发**的 `dev-*` 薄皮子 skill，共享同一个 harness 和证据链——**可组合，但每一段都留证据**。小任务只用其中一段即可。
+
+| 子 skill | 用途 |
+|---|---|
+| `dev-clarify` | 把模糊需求聊成 Goal/AC 齐全的 spec |
+| `dev-plan` | 只出规划五件套，不写代码 |
+| `dev-review` | 独立 reviewer 审方案/diff，结论绑定文件指纹 |
+| `dev-tdd` | 单元内红绿 TDD（红先于绿由 harness 强制） |
+| `dev-spec` | 规格基线 bootstrap / delta / 合并校验 |
+| `dev-ship` | 底线闸门 + 分支/提交/PR/CI |
+| `dev-debug` | 系统化调试（按根因，收尾锁回归测试） |
+
+安装（可选子集）：
+
+```bash
+python ~/.codex/skills/codex-dev-loop/scripts/install_skills.py --list
+python ~/.codex/skills/codex-dev-loop/scripts/install_skills.py            # 全部
+python ~/.codex/skills/codex-dev-loop/scripts/install_skills.py --only dev-tdd,dev-ship
+```
+
+选链逻辑（micro/small/standard/large 与升链触发线）见 `references/routing.md`。关键护栏：任一时刻一个工作区只有一处证据——存在进行中的 loop 时，子 skill 的 standalone 写入会被拒绝；小任务做大了（命中敏感路径、评审 block）会提示升级到完整 loop，已有证据可被 `adopt-evidence` 吸收。
 
 ### 适合 / 不适合
 
@@ -471,6 +495,30 @@ With only a rough idea:
 Use $codex-dev-loop with init --draft. I only have a rough idea: <your idea>.
 Clarify the goal and acceptance criteria with me before planning anything.
 ```
+
+### Composable Sub-Skills (small tasks skip the full pipeline)
+
+Beyond the full loop, each phase is also an independently triggerable `dev-*` sub-skill sharing the same harness and evidence chain — **compose, but every segment leaves evidence.** A small task can use just one segment.
+
+| Sub-skill | Purpose |
+|---|---|
+| `dev-clarify` | Turn a vague idea into a spec with a real Goal/Acceptance Criteria |
+| `dev-plan` | Produce the planning artifacts only, no code |
+| `dev-review` | Independent reviewer for a plan/diff, verdict bound to a file fingerprint |
+| `dev-tdd` | Red-green TDD inside a unit (red-before-green enforced by the harness) |
+| `dev-spec` | Spec baseline bootstrap / delta / merge validation |
+| `dev-ship` | Floor gate + branch/commit/PR/CI |
+| `dev-debug` | Systematic debugging (root cause, locked with a regression test) |
+
+Install (optional subset):
+
+```bash
+python ~/.codex/skills/codex-dev-loop/scripts/install_skills.py --list
+python ~/.codex/skills/codex-dev-loop/scripts/install_skills.py            # all
+python ~/.codex/skills/codex-dev-loop/scripts/install_skills.py --only dev-tdd,dev-ship
+```
+
+Routing (micro/small/standard/large and escalation tripwires) lives in `references/routing.md`. Key guardrail: one workspace holds one evidence record at a time — while a loop is in flight, sub-skill standalone writes are refused; when a small task grows (sensitive paths, a `block` verdict) you escalate to the full loop, and prior evidence is absorbed by `adopt-evidence`.
 
 ### Good Fit / Bad Fit
 

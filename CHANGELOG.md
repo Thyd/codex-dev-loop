@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.5.0 - 2026-07-07
+
+Composability release: the monolithic loop keeps its harness-enforced evidence chain, but each phase is now also an independently triggerable `dev-*` sub-skill for small tasks — "compose, but every segment leaves evidence." The loop state machine is unchanged.
+
+### Added
+
+- Composable standalone mode in the harness (loop code untouched): new commands `version` (`--require` handshake, `CORE_VERSION`), `guard-check` (exposes the sensitive-path detector for routing/tripwires), `check-spec` (Goal/Acceptance Criteria gate), `standalone-fingerprint`, `standalone-test` (red/green TDD with red-before-green, plus `--mode regression-only`; evidence in `<evidence_dir>/tdd/ledger.json`), `standalone-review` (bound to a target-file fingerprint), `check-spec-delta` (standalone spec-baseline validation), and `ship-check` (floor gate: git repo, non-protected branch, current green evidence).
+- Single-source-of-truth guard: standalone write commands are refused while a loop is active (`loop-state.json` exists and phase != complete), so evidence cannot fork. Read-only helpers (`guard-check`, `check-spec`, `check-spec-delta`, `standalone-fingerprint`) always work.
+- Seven `dev-*` sub-skills under `skills/`: `dev-clarify`, `dev-plan`, `dev-review`, `dev-tdd`, `dev-spec` (incl. brownfield baseline bootstrap), `dev-ship`, and `dev-debug` (systematic-debugging methodology). They are thin skins that call the shared harness — no gate logic of their own.
+- `references/routing.md`: shared decision tree, escalation tripwires, floor-gate set, and single-source-of-truth rule that every skill points to.
+- `adopt-evidence`: the upgrade path. When a standalone `dev-tdd` task grows into a full loop, this absorbs each standalone green whose workspace fingerprint still matches the current tree (re-stamping red-before-green evidence to the current plan) so verified units are not re-run.
+- `scripts/install_skills.py`: install a selected subset (or all) of the sub-skills into `<home>/skills/` (`--home`, `--only`, `--list`, `--dry-run`; honors `CODEX_DEV_LOOP_HOME`).
+- Config key `evidence_dir` (empty = auto; Codex hosts use `.codex/evidence/`, other hosts choose and persist a workspace-relative dir).
+- Orchestrator SKILL.md "Composition" section mapping each loop phase to its canonical sub-skill methodology: methodology lives in the sub-skill, enforcement lives in the harness.
+
+### Changed
+
+- The loop's `record-spec-merge` and the new standalone `check-spec-delta` share one extracted validator (`spec_delta_baseline_problems`), so the mechanical baseline check cannot drift between them.
+- `docs/composability-roadmap.md` records the confirmed design decisions and marks P1–P4 complete.
+
 ## 0.4.0 - 2026-07-07
 
 ### Added

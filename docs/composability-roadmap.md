@@ -197,7 +197,7 @@
 | **P1** | harness 加 standalone 模式 + `guard-check` + `check-spec`；抽出三个最高频子 skill：**dev-tdd、dev-review、dev-clarify** | 纯增量，不动现有 loop；先验证「薄皮 + core」模式，只放三个技能便于把触发边界调准 | ✅ 已完成（2026-07-07） |
 | **P2** | **dev-ship、dev-spec（含 bootstrap）、dev-plan** + `references/routing.md` | bootstrap 是唯一的全新功能点 | ✅ 已完成（2026-07-07） |
 | **P3** | 编排器 SKILL.md 重写为组合调用；`adopt-evidence` 证据吸收；self_test 覆盖 standalone 与升链 | 收口，单体 → 组合的正式切换 | ✅ 已完成（2026-07-07） |
-| **P4（可选）** | 借鉴 Superpowers 新增 systematic-debugging（loop 之外的独立方法论技能）；`install_skills.py` | 生态扩展 | 待开始 |
+| **P4（可选）** | 借鉴 Superpowers 新增 systematic-debugging（loop 之外的独立方法论技能）；`install_skills.py` | 生态扩展 | ✅ 已完成（2026-07-07，作为 0.5.0 发布） |
 
 ### P1 落地记录（2026-07-07）
 

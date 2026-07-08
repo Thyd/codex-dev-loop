@@ -1660,6 +1660,44 @@ def standalone_tests() -> int:
     if standalone_upgrade_path_test() != 0:
         return 1
 
+    if install_skills_test() != 0:
+        return 1
+
+    return 0
+
+
+def install_skills_test() -> int:
+    """install_skills.py discovers the dev-* skins and installs a subset into a
+    relocated home."""
+    installer = Path(__file__).with_name("install_skills.py").resolve()
+    listing = run([sys.executable, str(installer), "--list"])
+    if listing.returncode != 0:
+        print(listing.stdout)
+        print("Expected install_skills --list to succeed.")
+        return 1
+    for expected in ("dev-tdd", "dev-review", "dev-clarify", "dev-plan", "dev-spec", "dev-ship", "dev-debug"):
+        if expected not in listing.stdout:
+            print(listing.stdout)
+            print(f"Expected install_skills to discover {expected}.")
+            return 1
+    with tempfile.TemporaryDirectory(prefix="codex-dev-loop-install-") as raw_tmp:
+        home = Path(raw_tmp) / "home"
+        installed = run([sys.executable, str(installer), "--home", str(home), "--only", "dev-tdd,dev-ship"])
+        if installed.returncode != 0:
+            print(installed.stdout)
+            print("Expected install_skills to install the requested subset.")
+            return 1
+        if not (home / "skills" / "dev-tdd" / "SKILL.md").exists() or not (home / "skills" / "dev-ship" / "SKILL.md").exists():
+            print("Expected the selected sub-skills to be copied into <home>/skills.")
+            return 1
+        if (home / "skills" / "dev-plan").exists():
+            print("Expected --only to install just the requested subset.")
+            return 1
+        unknown = run([sys.executable, str(installer), "--home", str(home), "--only", "does-not-exist"])
+        if unknown.returncode == 0:
+            print(unknown.stdout)
+            print("Expected install_skills to reject an unknown sub-skill.")
+            return 1
     return 0
 
 
