@@ -35,8 +35,24 @@ PHASES = [
 
 REVIEW_ROLES = {"plan-reviewer", "implementation-reviewer", "risk-reviewer"}
 PROTECTED_BRANCHES = {"main", "master", "develop"}
-CORE_ARTIFACTS = ["source.md", "technical-design.md", "test-plan.md", "risk-analysis.md", "development-plan.md", "decision-log.md"]
+CORE_ARTIFACTS = ["source.md", "technical-design.md", "test-plan.md", "risk-analysis.md", "development-plan.md", "spec-delta.md", "decision-log.md"]
 FINAL_ARTIFACTS = ["final-report.md", "pr-body.md", "quality-gate-summary.md"]
+SCALES = ["small", "standard", "large"]
+SCALE_INDEX = {scale: index for index, scale in enumerate(SCALES)}
+TDD_MODES = {"red", "regression-only"}
+TEST_STAGES = {"red", "green"}
+# Paths whose changes must never ship through the small-scale shortcut that
+# skips risk review. Matching is fail-closed: when any changed path matches,
+# the harness refuses the skip and requires a real risk review.
+SENSITIVE_FILE_NAMES = {
+    "package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "bun.lock", "bun.lockb",
+    "pyproject.toml", "poetry.lock", "uv.lock", "pipfile", "pipfile.lock", "setup.py", "setup.cfg",
+    "go.mod", "go.sum", "cargo.toml", "cargo.lock", "gemfile", "gemfile.lock",
+    "composer.json", "composer.lock", "pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle",
+    "dockerfile", "docker-compose.yml", "docker-compose.yaml", ".gitlab-ci.yml", "jenkinsfile",
+}
+SENSITIVE_DIR_TOKENS = {".github", "migrations", "migration", "migrate", "auth", "security", "secrets", "crypto"}
+SENSITIVE_SUFFIXES = {".sql", ".tf", ".pem", ".key"}
 AI_REVIEW_CHECK_ALIASES = ["qodo", "coderabbit", "pr-agent", "ai-review"]
 # Real-world GitHub check names rarely equal the canonical gate name (for
 # example "SonarCloud Code Analysis" for the sonar gate). Each required check
@@ -50,12 +66,35 @@ SCANNER_CHECK_ALIASES = {
     "codeql": ["codeql"],
     "semgrep": ["semgrep"],
 }
-DEFAULT_CODEX_HOME = Path.home() / ".codex"
-DEFAULT_CONFIG_PATH = DEFAULT_CODEX_HOME / "config" / "codex-dev-loop.json"
-DEFAULT_TEST_GATE_SCRIPT = DEFAULT_CODEX_HOME / "skills" / "automated-dev-executor" / "scripts" / "test_gate.py"
-DEFAULT_QUALITY_GATE_SCRIPT = DEFAULT_CODEX_HOME / "skills" / "ai-code-quality-gate" / "scripts" / "quality_gate.py"
+HOME_ENV = "CODEX_DEV_LOOP_HOME"
+
+
+def codex_home() -> Path:
+    """Agent home for config and companion skills.
+
+    Defaults to ~/.codex; CODEX_DEV_LOOP_HOME relocates it so other agents
+    (for example Claude Code with ~/.claude) can host the same loop.
+    """
+    override = os.environ.get(HOME_ENV, "").strip()
+    return Path(override).expanduser() if override else Path.home() / ".codex"
+
+
+def default_config_path() -> Path:
+    return codex_home() / "config" / "codex-dev-loop.json"
+
+
+def default_test_gate_script() -> Path:
+    return codex_home() / "skills" / "automated-dev-executor" / "scripts" / "test_gate.py"
+
+
+def default_quality_gate_script() -> Path:
+    return codex_home() / "skills" / "ai-code-quality-gate" / "scripts" / "quality_gate.py"
+
+
+BUNDLED_TEST_GATE_SCRIPT = Path(__file__).resolve().parent / "test_gate.py"
+BUNDLED_QUALITY_GATE_SCRIPT = Path(__file__).resolve().parent / "quality_gate_fallback.py"
 TEST_MODE_ENV = "CODEX_DEV_LOOP_TEST_MODE"
-CONFIG_SCHEMA_VERSION = 1
+CONFIG_SCHEMA_VERSION = 2
 DEFAULT_CONFIG = {
     "schema_version": CONFIG_SCHEMA_VERSION,
     "automation_level": "pr_without_merge",
@@ -63,6 +102,10 @@ DEFAULT_CONFIG = {
     "quality_profile": "standard",
     "test_failure_limit": 3,
     "risk_mode": "stop_and_ask",
+    "default_scale": "standard",
+    "spec_dir": "specs",
+    "test_gate_script": "",
+    "quality_gate_script": "",
 }
 QUALITY_PROFILES = {
     "light": {
@@ -110,6 +153,8 @@ REVIEW_SECTIONS = {
 }
 PHASE_INDEX = {phase: index for index, phase in enumerate(PHASES)}
 BACKTRACKS = {
+    ("planning", "intake"),
+    ("plan_review", "intake"),
     ("plan_review", "planning"),
     ("implementation_review", "implementation"),
     ("risk_review", "implementation"),
@@ -119,11 +164,15 @@ BACKTRACKS = {
     ("complete", "implementation"),
 }
 
+DRAFT_SOURCE_TEMPLATE = "# Source\n\n## Goal\n\n## Acceptance Criteria\n\n## Context\n\n## Constraints\n\n## Open Questions\n"
+
 TEMPLATES = {
     "technical-design.md": "# Technical Design\n\n## Goal\n\n## Acceptance Criteria\n\n## Proposed Approach\n\n## File And Module Scope\n\n## Data Model Or API Changes\n\n## Dependencies\n\n## Non-Goals\n\n## Open Questions\n",
     "test-plan.md": "# Test Plan\n\n## Unit Tests\n\n## Integration Tests\n\n## E2E Or Browser Tests\n\n## Static Gates\n\n## Manual Checks\n\n## Coverage Gaps\n",
     "risk-analysis.md": "# Risk Analysis\n\n## Correctness Risks\n\n## Security Risks\n\n## Data Or Migration Risks\n\n## Architecture Risks\n\n## Compatibility Risks\n\n## External Service Or Credential Risks\n\n## Mitigations\n",
-    "development-plan.md": "# Development Plan\n\n## Unit dev-001\n\n- Objective:\n- Scope:\n- Acceptance:\n- Test gate:\n- Dependencies:\n- Status: pending\n- Evidence:\n",
+    "development-plan.md": "# Development Plan\n\n## Unit dev-001\n\n- Objective:\n- Scope:\n- Acceptance:\n- Test gate:\n- TDD: red\n- Dependencies:\n- Status: pending\n- Evidence:\n",
+    "spec-delta.md": "# Spec Delta\n\nDescribe requirement-level changes per capability, or justify no impact.\nEach `## Capability: <kebab-name>` maps to `<spec-dir>/<kebab-name>.md` in the repository.\nList each requirement as `#### Requirement: <title>` under ADDED/MODIFIED/REMOVED.\n\n## Capability: <name>\n\n### ADDED Requirements\n\n### MODIFIED Requirements\n\n### REMOVED Requirements\n\n## No Spec Impact\n",
+    "clarification-log.md": "# Clarification Log\n\n## Open Questions\n\n## Answered\n\n| Question | Answer | Source | Date |\n| --- | --- | --- | --- |\n\n## Assumptions Approved By User\n",
     "decision-log.md": "# Decision Log\n\n",
     "github-actions.md": "# GitHub Actions\n\n## PR\n\n- URL:\n\n## Checks\n\n| Check | Status | URL |\n| --- | --- | --- |\n\n## Decision\n\npending\n\n## Notes\n",
     "final-report.md": "# Final Report\n\n## Summary\n\n## Changed Files\n\n## Test Evidence\n\n## Quality Gate\n\n## Subagent Reviews\n\n## GitHub Actions\n\n## Commit\n\n## Pull Request\n\n## Follow-Ups\n",
@@ -178,17 +227,29 @@ def normalize_config(raw: object) -> dict:
     if test_failure_limit not in {0, 1, 2, 3}:
         raise SystemExit("test_failure_limit in codex-dev-loop config must be one of 0, 1, 2, or 3.")
     config["test_failure_limit"] = test_failure_limit
+    if config.get("default_scale") not in SCALE_INDEX:
+        raise SystemExit(f"Invalid default_scale in codex-dev-loop config: {config.get('default_scale')!r}")
+    spec_dir = str(config.get("spec_dir") or "").strip().replace("\\", "/")
+    if not spec_dir or spec_dir.startswith("/") or spec_dir.startswith("~") or ":" in spec_dir or ".." in spec_dir.split("/"):
+        raise SystemExit(f"spec_dir in codex-dev-loop config must be a relative path inside the repository: {config.get('spec_dir')!r}")
+    config["spec_dir"] = spec_dir
+    for key in ("test_gate_script", "quality_gate_script"):
+        if not isinstance(config.get(key), str):
+            raise SystemExit(f"{key} in codex-dev-loop config must be a string path or empty.")
+    # Schema v1 configs are accepted as-is: every v2 key falls back to its
+    # default above, so first-run users never have to re-answer the wizard.
     config["schema_version"] = CONFIG_SCHEMA_VERSION
     return config
 
 
 def load_loop_config(config_path: str = "") -> dict:
     path_text = config_path or os.environ.get("CODEX_DEV_LOOP_CONFIG", "")
-    path = Path(path_text).expanduser() if path_text else DEFAULT_CONFIG_PATH
+    path = Path(path_text).expanduser() if path_text else default_config_path()
     if not path.exists():
         config = default_config()
         config["path"] = str(path)
         config["configured"] = False
+        config["home_anchored"] = False
         return config
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -197,6 +258,12 @@ def load_loop_config(config_path: str = "") -> dict:
     config = normalize_config(data)
     config["path"] = str(path)
     config["configured"] = True
+    # Gate-script overrides are only honored from the home-anchored config so
+    # a workspace-local JSON passed via --config cannot swap in a fake gate.
+    try:
+        config["home_anchored"] = path.resolve() == default_config_path().resolve()
+    except OSError:
+        config["home_anchored"] = False
     return config
 
 
@@ -206,6 +273,62 @@ def loop_config(state: dict) -> dict:
 
 def quality_profile(state: dict) -> dict:
     return QUALITY_PROFILES[loop_config(state)["quality_profile"]]
+
+
+def loop_scale(state: dict) -> str:
+    scale = state.get("scale") or "standard"
+    if scale not in SCALE_INDEX:
+        raise SystemExit(f"Loop state has invalid scale: {scale!r}")
+    return scale
+
+
+def changed_workspace_paths(workspace: Path) -> list[str]:
+    """Staged, unstaged, and untracked paths; the loop commits only after the
+    quality gate, so at skip-decision time this is the full change set."""
+    completed = run_git(workspace, ["status", "--porcelain"], check=True)
+    paths: list[str] = []
+    for raw_line in completed.stdout.splitlines():
+        if len(raw_line) < 4:
+            continue
+        entry = raw_line[3:].strip().strip('"')
+        if " -> " in entry:
+            entry = entry.split(" -> ", 1)[1].strip().strip('"')
+        if entry:
+            paths.append(entry)
+    return paths
+
+
+def sensitive_changed_paths(workspace: Path) -> list[str]:
+    sensitive: list[str] = []
+    for path in changed_workspace_paths(workspace):
+        normalized = path.replace("\\", "/")
+        parts = [part.lower() for part in normalized.split("/") if part]
+        if not parts:
+            continue
+        name = parts[-1]
+        matched = (
+            name in SENSITIVE_FILE_NAMES
+            or (name.startswith("requirements") and name.endswith(".txt"))
+            or name.startswith("dockerfile")
+            or name.startswith(".env")
+            or "secret" in name
+            or "credential" in name
+            or any(name.endswith(suffix) for suffix in SENSITIVE_SUFFIXES)
+            or any(part in SENSITIVE_DIR_TOKENS for part in parts[:-1])
+        )
+        if matched:
+            sensitive.append(path)
+    return sensitive
+
+
+def assert_small_scale_skip_allowed(state: dict, workspace: Path) -> None:
+    sensitive = sensitive_changed_paths(workspace)
+    if sensitive:
+        raise SystemExit(
+            "Small scale cannot skip risk review: sensitive paths changed ("
+            + ", ".join(sorted(sensitive))
+            + "). Run the risk review phase (backtrack with set-phase) or keep scale at standard or large."
+        )
 
 
 def assert_config_allows_phase(state: dict, target: str) -> None:
@@ -417,11 +540,72 @@ def planned_units(root: Path) -> list[str]:
     return units
 
 
+def unit_tdd_modes(root: Path) -> dict[str, str]:
+    """Per-unit TDD mode from development-plan.md.
+
+    `- TDD: red` (default) requires recorded failing red evidence before a
+    green run counts. `- TDD: regression-only` waives the red stage for units
+    that are covered by existing tests (refactors); the waiver sits in the
+    plan on purpose so plan review has to approve it.
+    """
+    plan = root / "development-plan.md"
+    modes: dict[str, str] = {}
+    if not plan.exists():
+        return modes
+    current = ""
+    for raw_line in plan.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw_line.strip()
+        if line.lower().startswith("## unit "):
+            current = line.split(None, 2)[-1].strip()
+            continue
+        if current and line.lower().startswith("- tdd:"):
+            modes[current] = line.split(":", 1)[1].strip().lower()
+    return modes
+
+
+def unit_tdd_mode(root: Path, unit: str) -> str:
+    mode = unit_tdd_modes(root).get(unit, "red")
+    if not mode:
+        return "red"
+    if mode not in TDD_MODES:
+        raise SystemExit(f"Unit {unit} has invalid '- TDD:' value {mode!r}; use one of: {', '.join(sorted(TDD_MODES))}.")
+    return mode
+
+
+def attempt_stage(record: dict) -> str:
+    return record.get("stage") or "green"
+
+
+def unit_has_red_evidence(root: Path, state: dict, unit: str) -> bool:
+    """A red run proves the test can fail; only status 'failed' counts
+    (timeout/error prove nothing) and it must match the reviewed plan."""
+    for record in state.get("test_attempts", {}).get(unit, []):
+        if attempt_stage(record) != "red":
+            continue
+        if record.get("status") != "failed":
+            continue
+        if record.get("plan_fingerprint") == plan_fingerprint(root):
+            return True
+    return False
+
+
+def unit_red_gate_satisfied(root: Path, state: dict, unit: str) -> bool:
+    if unit_tdd_mode(root, unit) == "regression-only":
+        return True
+    return unit_has_red_evidence(root, state, unit)
+
+
 def latest_test_status(state: dict, unit: str) -> str:
     attempts = state.get("test_attempts", {}).get(unit, [])
     if not attempts:
         return ""
     return attempts[-1].get("status", "")
+
+
+def unit_green_is_current(record: dict, root: Path, workspace: Path) -> bool:
+    if record.get("status") != "passed" or attempt_stage(record) != "green":
+        return False
+    return current_record(record, root, workspace, include_workspace=True)
 
 
 def all_planned_tests_passed(root: Path, state: dict, workspace: Path) -> bool:
@@ -432,10 +616,9 @@ def all_planned_tests_passed(root: Path, state: dict, workspace: Path) -> bool:
         attempts = state.get("test_attempts", {}).get(unit, [])
         if not attempts:
             return False
-        latest = attempts[-1]
-        if latest.get("status") != "passed":
+        if not unit_green_is_current(attempts[-1], root, workspace):
             return False
-        if not current_record(latest, root, workspace, include_workspace=True):
+        if not unit_red_gate_satisfied(root, state, unit):
             return False
     return True
 
@@ -447,9 +630,11 @@ def missing_or_failing_units(root: Path, state: dict, workspace: Path) -> list[s
         if not attempts:
             missing.append(unit)
             continue
-        latest = attempts[-1]
-        if latest.get("status") != "passed" or not current_record(latest, root, workspace, include_workspace=True):
+        if not unit_green_is_current(attempts[-1], root, workspace):
             missing.append(unit)
+            continue
+        if not unit_red_gate_satisfied(root, state, unit):
+            missing.append(f"{unit} (missing red-stage TDD evidence)")
     return missing
 
 
@@ -489,26 +674,120 @@ def section_has_content(text: str, heading: str) -> bool:
     return False
 
 
-def assert_core_artifacts(root: Path) -> None:
+def assert_source_ready(root: Path) -> None:
+    source_path = root / "source.md"
+    if not source_path.exists():
+        raise SystemExit("Missing source.md; run init first.")
+    source = source_path.read_text(encoding="utf-8", errors="replace")
+    if not section_has_content(source, "## Goal") or not section_has_content(source, "## Acceptance Criteria"):
+        raise SystemExit(
+            "source.md must contain non-empty Goal and Acceptance Criteria sections. "
+            "Stay in the intake phase and clarify the requirement with the user "
+            "(record questions and answers in clarification-log.md) before set-phase planning."
+        )
+
+
+def parse_spec_delta(text: str) -> dict:
+    capabilities: dict[str, dict[str, list[str]]] = {}
+    current_capability = ""
+    current_bucket = ""
+    no_impact_lines: list[str] = []
+    in_no_impact = False
+    bucket_names = {"added requirements": "added", "modified requirements": "modified", "removed requirements": "removed"}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        lower = line.lower()
+        if lower.startswith("## capability:"):
+            current_capability = line.split(":", 1)[1].strip()
+            current_bucket = ""
+            in_no_impact = False
+            if current_capability and not current_capability.startswith("<"):
+                capabilities.setdefault(current_capability, {"added": [], "modified": [], "removed": []})
+            continue
+        if lower.startswith("## no spec impact"):
+            in_no_impact = True
+            current_capability = ""
+            current_bucket = ""
+            continue
+        if lower.startswith("## "):
+            in_no_impact = False
+            current_capability = ""
+            current_bucket = ""
+            continue
+        if lower.startswith("### "):
+            bucket = bucket_names.get(lower[4:].strip(), "")
+            current_bucket = bucket
+            continue
+        if lower.startswith("#### requirement:"):
+            title = line.split(":", 1)[1].strip()
+            if current_capability and not current_capability.startswith("<") and current_bucket and title:
+                capabilities[current_capability][current_bucket].append(title)
+            continue
+        if in_no_impact and line and line not in {"-", "- ...", "TBD", "TODO", "N/A"}:
+            no_impact_lines.append(line)
+    declared = {
+        name: buckets
+        for name, buckets in capabilities.items()
+        if any(buckets["added"]) or any(buckets["modified"]) or any(buckets["removed"])
+    }
+    return {"capabilities": declared, "no_impact_reason": " ".join(no_impact_lines).strip()}
+
+
+def load_spec_delta(root: Path) -> dict:
+    path = root / "spec-delta.md"
+    if not path.exists():
+        raise SystemExit("Missing required planning artifact: spec-delta.md")
+    delta = parse_spec_delta(path.read_text(encoding="utf-8", errors="replace"))
+    if delta["capabilities"] and delta["no_impact_reason"]:
+        raise SystemExit("spec-delta.md is ambiguous: it declares capability requirements and a No Spec Impact reason. Keep exactly one.")
+    if not delta["capabilities"] and not delta["no_impact_reason"]:
+        raise SystemExit(
+            "spec-delta.md must declare at least one '#### Requirement:' under a '## Capability:' section, "
+            "or justify the change under '## No Spec Impact'."
+        )
+    return delta
+
+
+ARTIFACT_SECTION_REQUIREMENTS = {
+    "technical-design.md": ["## Proposed Approach", "## File And Module Scope"],
+    "test-plan.md": ["## Unit Tests", "## Static Gates"],
+    "risk-analysis.md": ["## Correctness Risks", "## Architecture Risks"],
+    "development-plan.md": ["## Unit dev-001", "- Objective:", "- Test gate:"],
+}
+# Scale controls how much prose the gate demands, never which files exist:
+# small keeps the full artifact set but only requires real content in the
+# design; large requires every listed section to be filled in.
+SCALE_CONTENT_REQUIRED = {
+    "small": {"technical-design.md"},
+    "standard": {"technical-design.md", "test-plan.md", "risk-analysis.md"},
+    "large": {"technical-design.md", "test-plan.md", "risk-analysis.md"},
+}
+
+
+def assert_core_artifacts(root: Path, scale: str = "standard") -> None:
     missing = [name for name in CORE_ARTIFACTS if not artifact_exists(root, name)]
     if missing:
         raise SystemExit("Missing required planning artifacts: " + ", ".join(missing))
-    source = (root / "source.md").read_text(encoding="utf-8", errors="replace")
-    if not section_has_content(source, "## Goal") or not section_has_content(source, "## Acceptance Criteria"):
-        raise SystemExit("source.md must contain non-empty Goal and Acceptance Criteria sections.")
-    required_sections = {
-        "technical-design.md": ["## Proposed Approach", "## File And Module Scope"],
-        "test-plan.md": ["## Unit Tests", "## Static Gates"],
-        "risk-analysis.md": ["## Correctness Risks", "## Architecture Risks"],
-        "development-plan.md": ["## Unit dev-001", "- Objective:", "- Test gate:"],
-    }
-    for name, headings in required_sections.items():
+    assert_source_ready(root)
+    content_required = SCALE_CONTENT_REQUIRED[scale]
+    for name, headings in ARTIFACT_SECTION_REQUIREMENTS.items():
         text = (root / name).read_text(encoding="utf-8", errors="replace")
         for heading in headings:
             if heading not in text:
                 raise SystemExit(f"{name} missing required section or field: {heading}")
-        if name != "development-plan.md" and not any(section_has_content(text, heading) for heading in headings if heading.startswith("##")):
-            raise SystemExit(f"{name} must contain non-placeholder planning content.")
+        if name == "development-plan.md":
+            continue
+        section_headings = [heading for heading in headings if heading.startswith("##")]
+        if name in content_required:
+            if scale == "large":
+                empty = [heading for heading in section_headings if not section_has_content(text, heading)]
+                if empty:
+                    raise SystemExit(f"{name} must fill every required section at large scale; empty: {', '.join(empty)}")
+            elif not any(section_has_content(text, heading) for heading in section_headings):
+                raise SystemExit(f"{name} must contain non-placeholder planning content.")
+    load_spec_delta(root)
+    for unit in planned_units(root):
+        unit_tdd_mode(root, unit)
 
 
 def assert_pr_artifacts(root: Path) -> None:
@@ -518,13 +797,14 @@ def assert_pr_artifacts(root: Path) -> None:
 
 
 def clear_downstream_state(state: dict, target: str) -> None:
-    if target in {"planning", "plan_review"}:
+    if target in {"intake", "planning", "plan_review"}:
         state["reviews"] = {}
         state["test_attempts"] = {}
         state["quality_gate"] = {}
         state["git"] = {}
         state["github_actions"] = {}
         state["blockers"] = []
+        state.pop("spec_merge", None)
         return
     if target == "branch":
         state.get("reviews", {}).pop("implementation-reviewer", None)
@@ -534,6 +814,7 @@ def clear_downstream_state(state: dict, target: str) -> None:
         state["git"] = {}
         state["github_actions"] = {}
         state["blockers"] = []
+        state.pop("spec_merge", None)
         return
     if target == "implementation":
         state.get("reviews", {}).pop("implementation-reviewer", None)
@@ -544,6 +825,7 @@ def clear_downstream_state(state: dict, target: str) -> None:
         state["git"] = {"branch": git.get("branch", ""), "branch_recorded_at": git.get("branch_recorded_at", "")}
         state["github_actions"] = {}
         state["blockers"] = []
+        state.pop("spec_merge", None)
         return
     if target == "implementation_review":
         state.get("reviews", {}).pop("implementation-reviewer", None)
@@ -587,6 +869,13 @@ def review_is_current(state: dict, role: str, root: Path, workspace: Path) -> bo
     return current_record(record, root, workspace, include_workspace=role != "plan-reviewer")
 
 
+def spec_merge_is_current(state: dict, root: Path, workspace: Path) -> bool:
+    record = state.get("spec_merge") or {}
+    if record.get("status") not in {"merged", "no-impact"}:
+        return False
+    return current_record(record, root, workspace, include_workspace=True)
+
+
 def quality_is_current(state: dict, root: Path, workspace: Path) -> bool:
     record = state.get("quality_gate", {})
     if record.get("status") != "passed":
@@ -620,7 +909,7 @@ def cloud_is_current(state: dict, root: Path, workspace: Path) -> bool:
 
 def assert_completion_prereqs(root: Path, state: dict, workspace: Path) -> None:
     assert_no_blockers(state)
-    assert_core_artifacts(root)
+    assert_core_artifacts(root, loop_scale(state))
     automation_level = loop_config(state)["automation_level"]
     if automation_level == "planning_only":
         if not review_is_current(state, "plan-reviewer", root, workspace):
@@ -641,8 +930,11 @@ def assert_phase_prereqs(root: Path, state: dict, target: str, workspace: Path) 
         assert_completion_prereqs(root, state, workspace)
         return
     assert_no_blockers(state)
+    scale = loop_scale(state)
+    if target == "planning":
+        assert_source_ready(root)
     if target in {"plan_review", "branch", "implementation", "implementation_review", "risk_review", "quality_gate", "pr", "cloud_checks", "complete"}:
-        assert_core_artifacts(root)
+        assert_core_artifacts(root, scale)
     if target in {"branch", "implementation", "implementation_review", "risk_review", "quality_gate", "pr", "cloud_checks", "complete"}:
         if not review_is_current(state, "plan-reviewer", root, workspace):
             raise SystemExit("Cannot advance before plan-reviewer passes.")
@@ -655,12 +947,20 @@ def assert_phase_prereqs(root: Path, state: dict, target: str, workspace: Path) 
         if not all_planned_tests_passed(root, state, workspace):
             missing = ", ".join(missing_or_failing_units(root, state, workspace))
             raise SystemExit(f"Cannot advance before all planned units have latest test gate passed: {missing}")
+        if not spec_merge_is_current(state, root, workspace):
+            raise SystemExit(
+                "Cannot advance before the spec baseline is reconciled with spec-delta.md; "
+                "merge the delta into the spec directory and run record-spec-merge."
+            )
     if target in {"risk_review", "quality_gate", "pr", "cloud_checks", "complete"}:
         if not review_is_current(state, "implementation-reviewer", root, workspace):
             raise SystemExit("Cannot advance before implementation-reviewer passes.")
     if target in {"quality_gate", "pr", "cloud_checks", "complete"}:
         if not review_is_current(state, "risk-reviewer", root, workspace):
-            raise SystemExit("Cannot advance before risk-reviewer passes.")
+            if scale == "small":
+                assert_small_scale_skip_allowed(state, workspace)
+            else:
+                raise SystemExit("Cannot advance before risk-reviewer passes.")
     if target in {"pr", "cloud_checks", "complete"}:
         if not quality_is_current(state, root, workspace):
             raise SystemExit("Cannot advance before quality gate passes.")
@@ -690,6 +990,11 @@ def assert_transition(root: Path, state: dict, target: str, workspace: Path) -> 
         assert_phase_prereqs(root, state, target, workspace)
         return
     if target_index == current_index + 1 or (current, target) in BACKTRACKS:
+        assert_phase_prereqs(root, state, target, workspace)
+        return
+    if current == "implementation_review" and target == "quality_gate" and loop_scale(state) == "small":
+        # Small scale may skip the risk_review phase; the prereqs re-check the
+        # sensitive-path guard so the shortcut closes as soon as risky files change.
         assert_phase_prereqs(root, state, target, workspace)
         return
     raise SystemExit(f"Illegal phase transition: {current} -> {target}")
@@ -939,15 +1244,31 @@ def copy_report(src: Path, dest: Path) -> None:
 
 def cmd_init(args: argparse.Namespace) -> int:
     root = Path(args.root)
+    state_path = root / "loop-state.json"
+    if state_path.exists() and not args.force:
+        previous = json.loads(state_path.read_text(encoding="utf-8"))
+        raise SystemExit(
+            f"A previous dev loop exists at {root} (phase: {previous.get('phase', 'unknown')}). "
+            "Archive it first (harness archive) or pass --force to overwrite its state."
+        )
     root.mkdir(parents=True, exist_ok=True)
     config = load_loop_config(args.config)
     if args.source_type not in config["source_types"]:
         raise SystemExit(f"Configured source_types do not allow {args.source_type!r} sources.")
+    scale = args.scale or config["default_scale"]
+    if scale not in SCALE_INDEX:
+        raise SystemExit(f"Unknown scale: {scale!r}; use one of: {', '.join(SCALES)}.")
     source = Path(args.source) if args.source else None
     if source and source.exists():
         shutil.copyfile(source, root / "source.md")
     elif not (root / "source.md").exists():
-        raise SystemExit("A source spec is required. Pass --source <source.md> or create source.md first.")
+        if args.draft:
+            (root / "source.md").write_text(DRAFT_SOURCE_TEMPLATE, encoding="utf-8")
+        else:
+            raise SystemExit(
+                "A source spec is required. Pass --source <source.md>, create source.md first, "
+                "or start a clarification-first loop with --draft."
+            )
 
     for name, text in TEMPLATES.items():
         path = root / name
@@ -955,10 +1276,11 @@ def cmd_init(args: argparse.Namespace) -> int:
             path.write_text(text, encoding="utf-8")
 
     state = {
-        "phase": "planning",
+        "phase": "intake",
         "created_at": now(),
         "updated_at": now(),
         "config": config,
+        "scale": scale,
         "source": str(source) if source else "",
         "source_type": args.source_type,
         "source_fingerprint": sha256_bytes((root / "source.md").read_bytes()),
@@ -970,7 +1292,8 @@ def cmd_init(args: argparse.Namespace) -> int:
         "blockers": [],
     }
     write_state(root, state)
-    print(f"Initialized dev loop at {root}")
+    print(f"Initialized dev loop at {root} (phase: intake, scale: {scale})")
+    print("Clarify Goal and Acceptance Criteria with the user if they are unclear, record Q&A in clarification-log.md, then set-phase planning.")
     return 0
 
 
@@ -1046,29 +1369,57 @@ def cmd_record_review(args: argparse.Namespace) -> int:
     return 0
 
 
-def record_test_meta(root: Path, workspace: Path, state: dict, unit: str, meta_path: Path) -> int:
-    meta = load_test_meta(meta_path, unit, workspace)
+def record_test_meta(
+    root: Path,
+    workspace: Path,
+    state: dict,
+    unit: str,
+    meta_path: Path,
+    stage: str = "green",
+    run_cwd: Path | None = None,
+    worktree: str = "",
+) -> int:
+    run_cwd = run_cwd or workspace
+    meta = load_test_meta(meta_path, unit, run_cwd)
     attempts = state.setdefault("test_attempts", {}).setdefault(unit, [])
-    fingerprints = evidence_fingerprint(root, workspace)
     record = {
         "status": meta["status"],
+        "stage": stage,
         "command": meta["command"],
         "exit_code": meta.get("exit_code"),
         "log": meta["log_path"],
         "meta": str(meta_path),
-        "plan_fingerprint": fingerprints["plan"],
-        "workspace_fingerprint": fingerprints["workspace"],
+        "plan_fingerprint": plan_fingerprint(root),
+        "workspace_fingerprint": workspace_fingerprint(run_cwd),
         "recorded_at": now(),
     }
+    if worktree:
+        record["worktree"] = worktree
     attempts.append(record)
+    if stage == "red":
+        write_state(root, state)
+        if meta["status"] == "passed":
+            print(
+                f"{unit}: red-stage test PASSED before implementation. The test does not prove the missing behavior; "
+                "strengthen it (or mark the unit '- TDD: regression-only' in the development plan and re-run plan review)."
+            )
+            return 1
+        if meta["status"] != "failed":
+            print(f"{unit}: red-stage run ended with {meta['status']}; fix the test harness so the red run fails cleanly.")
+            return 1
+        print(f"{unit}: red evidence recorded (attempt {len(attempts)})")
+        return 0
     # test_failure_limit is the number of automatic retries allowed after a
     # failure: 0 blocks on the first failure, 3 blocks on the fourth
-    # consecutive failure. Counting is consecutive (a pass resets it) and also
-    # resets when a blocker is explicitly resolved, so an early stumble does
-    # not count against a later, unrelated regression.
+    # consecutive failure. Counting is consecutive (a pass resets it), skips
+    # red-stage evidence runs, and also resets when a blocker is explicitly
+    # resolved, so an early stumble does not count against a later,
+    # unrelated regression.
     reset_marker = state.get("failure_counter_reset_at", "")
     consecutive_failures = 0
     for item in reversed(attempts):
+        if attempt_stage(item) == "red":
+            continue
         if item.get("status") == "passed":
             break
         if reset_marker and item.get("recorded_at", "") <= reset_marker:
@@ -1089,35 +1440,173 @@ def record_test_meta(root: Path, workspace: Path, state: dict, unit: str, meta_p
     return 0
 
 
-def cmd_run_test(args: argparse.Namespace) -> int:
-    root = Path(args.root)
-    workspace = Path(args.workspace).resolve()
-    state = read_state(root)
-    assert_phase(state, {"implementation"})
-    assert_no_blockers(state)
-    script = Path(args.test_gate_script)
-    if script.resolve() != DEFAULT_TEST_GATE_SCRIPT.resolve():
-        assert_test_mode("Caller-supplied test gate scripts")
-    if not script.exists():
-        raise SystemExit(f"Test gate script does not exist: {script}")
+def resolve_test_gate_script(config: dict, caller_path: str = "") -> Path:
+    """Trusted test gate scripts, in priority order: home-anchored config
+    override, the automated-dev-executor companion skill, then the bundled
+    fallback. Caller-supplied paths outside this set need test mode."""
+    override = (config.get("test_gate_script") or "").strip() if config.get("home_anchored") else ""
+    trusted: list[Path] = []
+    if override:
+        trusted.append(Path(override).expanduser())
+    trusted.extend([default_test_gate_script(), BUNDLED_TEST_GATE_SCRIPT])
+    if caller_path:
+        candidate = Path(caller_path).expanduser()
+        try:
+            is_trusted = any(candidate.resolve() == item.resolve() for item in trusted)
+        except OSError:
+            is_trusted = False
+        if not is_trusted:
+            assert_test_mode("Caller-supplied test gate scripts")
+        if not candidate.exists():
+            raise SystemExit(f"Test gate script does not exist: {candidate}")
+        return candidate
+    for item in trusted:
+        if item.exists():
+            return item
+    raise SystemExit(
+        "No test gate script found. Install the automated-dev-executor skill, set test_gate_script in the "
+        "codex-dev-loop config, or restore the bundled scripts/test_gate.py."
+    )
+
+
+def assert_green_stage_allowed(root: Path, state: dict, unit: str) -> None:
+    if not unit_red_gate_satisfied(root, state, unit):
+        raise SystemExit(
+            f"Unit {unit} has no red-stage TDD evidence for the current plan. Run the test gate with --stage red "
+            "against the new failing test first, or mark the unit '- TDD: regression-only' in development-plan.md "
+            "before plan review."
+        )
+
+
+def run_test_gate(
+    root: Path,
+    workspace: Path,
+    state: dict,
+    unit: str,
+    test_command: str,
+    stage: str,
+    timeout: int,
+    script: Path,
+) -> int:
+    if stage == "green":
+        assert_green_stage_allowed(root, state, unit)
     command = [
         sys.executable,
         str(script),
         "--unit",
-        args.unit,
+        unit,
         "--command",
-        args.command,
+        test_command,
         "--cwd",
         str(workspace),
         "--timeout",
-        str(args.timeout),
+        str(timeout),
     ]
     result = run_child(command, workspace)
     print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
     meta = parse_key_value_output(result.stdout, "AUTODEV_TEST_META")
     if not meta:
         raise SystemExit("Test gate did not report AUTODEV_TEST_META.")
-    return record_test_meta(root, workspace, state, args.unit, Path(meta))
+    return record_test_meta(root, workspace, state, unit, Path(meta), stage=stage)
+
+
+def cmd_run_test(args: argparse.Namespace) -> int:
+    root = Path(args.root)
+    workspace = Path(args.workspace).resolve()
+    state = read_state(root)
+    assert_phase(state, {"implementation"})
+    assert_no_blockers(state)
+    if args.stage not in TEST_STAGES:
+        raise SystemExit(f"Unknown test stage: {args.stage!r}; use red or green.")
+    script = resolve_test_gate_script(loop_config(state), args.test_gate_script)
+    return run_test_gate(root, workspace, state, args.unit, args.command, args.stage, args.timeout, script)
+
+
+def is_linked_worktree(workspace: Path, candidate: Path) -> bool:
+    completed = run_git(candidate, ["rev-parse", "--git-common-dir"])
+    if completed.returncode != 0:
+        return False
+    common = Path(completed.stdout.strip())
+    if not common.is_absolute():
+        common = (candidate / common).resolve()
+    try:
+        return common.resolve() == (workspace / ".git").resolve()
+    except OSError:
+        return False
+
+
+def cmd_record_test(args: argparse.Namespace) -> int:
+    """Record a test gate run that a unit-implementer executed in an isolated
+    git worktree. The orchestrator serializes these calls, so parallel units
+    never race on loop-state.json. Worktree fingerprints intentionally differ
+    from the main workspace: interim evidence never satisfies the final gate,
+    which forces a post-merge verify-units pass in the main workspace."""
+    root = Path(args.root)
+    workspace = Path(args.workspace).resolve()
+    state = read_state(root)
+    assert_phase(state, {"implementation"})
+    assert_no_blockers(state)
+    if args.stage not in TEST_STAGES:
+        raise SystemExit(f"Unknown test stage: {args.stage!r}; use red or green.")
+    worktree = Path(args.worktree).resolve()
+    if not worktree.exists():
+        raise SystemExit(f"Worktree does not exist: {worktree}")
+    if worktree == workspace:
+        raise SystemExit("record-test is for isolated worktrees; use run-test in the main workspace.")
+    if not is_linked_worktree(workspace, worktree):
+        raise SystemExit(f"{worktree} is not a linked git worktree of {workspace}; create it with 'git worktree add'.")
+    if args.stage == "green":
+        assert_green_stage_allowed(root, state, args.unit)
+    return record_test_meta(
+        root,
+        workspace,
+        state,
+        args.unit,
+        Path(args.meta),
+        stage=args.stage,
+        run_cwd=worktree,
+        worktree=str(worktree),
+    )
+
+
+def cmd_verify_units(args: argparse.Namespace) -> int:
+    """Re-run every planned unit's most recent green command in the main
+    workspace. Run this after merging parallel worktrees back (and after the
+    spec baseline merge), so the final per-unit evidence matches the exact
+    tree that goes to review, quality gate, and PR."""
+    root = Path(args.root)
+    workspace = Path(args.workspace).resolve()
+    state = read_state(root)
+    assert_phase(state, {"implementation"})
+    assert_no_blockers(state)
+    units = planned_units(root)
+    if not units:
+        raise SystemExit("development-plan.md has no '## Unit dev-*' sections to verify.")
+    commands: dict[str, str] = {}
+    missing: list[str] = []
+    for unit in units:
+        attempts = state.get("test_attempts", {}).get(unit, [])
+        green_commands = [item.get("command") for item in attempts if attempt_stage(item) == "green" and item.get("command")]
+        any_commands = [item.get("command") for item in attempts if item.get("command")]
+        if green_commands:
+            commands[unit] = green_commands[-1]
+        elif any_commands:
+            commands[unit] = any_commands[-1]
+        else:
+            missing.append(unit)
+    if missing:
+        raise SystemExit(
+            "No recorded test command for unit(s): " + ", ".join(missing) + ". Run run-test or record-test for them first."
+        )
+    script = resolve_test_gate_script(loop_config(state), "")
+    for unit in units:
+        state = read_state(root)
+        outcome = run_test_gate(root, workspace, state, unit, commands[unit], "green", args.timeout, script)
+        if outcome != 0:
+            print(f"verify-units stopped at {unit}.")
+            return outcome
+    print(f"verify-units: {len(units)} unit(s) re-verified in the main workspace.")
+    return 0
 
 
 def record_quality_result(
@@ -1185,15 +1674,30 @@ def record_quality_result(
     return 0
 
 
+def resolve_quality_gate_script(config: dict) -> Path:
+    """Same trust ladder as the test gate: home-anchored config override,
+    the ai-code-quality-gate companion skill, then the bundled fallback."""
+    override = (config.get("quality_gate_script") or "").strip() if config.get("home_anchored") else ""
+    candidates: list[Path] = []
+    if override:
+        candidates.append(Path(override).expanduser())
+    candidates.extend([default_quality_gate_script(), BUNDLED_QUALITY_GATE_SCRIPT])
+    for item in candidates:
+        if item.exists():
+            return item
+    raise SystemExit(
+        "No quality gate script found. Install the ai-code-quality-gate skill, set quality_gate_script in the "
+        "codex-dev-loop config, or restore the bundled scripts/quality_gate_fallback.py."
+    )
+
+
 def cmd_run_quality(args: argparse.Namespace) -> int:
     root = Path(args.root)
     workspace = Path(args.workspace).resolve()
     state = read_state(root)
     assert_phase(state, {"quality_gate"})
     assert_phase_prereqs(root, state, "quality_gate", workspace)
-    script = DEFAULT_QUALITY_GATE_SCRIPT
-    if not script.exists():
-        raise SystemExit(f"Quality gate script does not exist: {script}")
+    script = resolve_quality_gate_script(loop_config(state))
     profile_name = loop_config(state)["quality_profile"]
     profile = quality_profile(state)
     profile_gates = list(profile["quality_gates"])
@@ -1379,6 +1883,130 @@ def cmd_record_cloud(args: argparse.Namespace) -> int:
     return 0
 
 
+def assert_safe_capability_name(name: str) -> None:
+    if not name:
+        raise SystemExit("spec-delta.md contains an empty capability name.")
+    allowed = set("abcdefghijklmnopqrstuvwxyz0123456789-_.")
+    if name.lower() != name or any(char not in allowed for char in name) or name.startswith(".") or ".." in name:
+        raise SystemExit(
+            f"Capability name {name!r} must be kebab-case (lowercase letters, digits, '-', '_', '.') "
+            "because it maps to a spec baseline filename."
+        )
+
+
+def cmd_record_spec_merge(args: argparse.Namespace) -> int:
+    """Verify that the reviewed spec-delta.md is reflected in the repository
+    spec baseline and record it with evidence fingerprints.
+
+    The agent performs the actual merge edit in <spec_dir>/<capability>.md;
+    this command checks the result mechanically: every ADDED/MODIFIED
+    '#### Requirement:' title must exist in the capability file and every
+    REMOVED title must be gone. The record binds to plan and workspace
+    fingerprints, so later code or spec edits invalidate it and the phase
+    gates force a re-check. Because the baseline lives inside the workspace,
+    spec updates ride the same branch, diff, reviews, and PR as the code."""
+    root = Path(args.root)
+    workspace = Path(args.workspace).resolve()
+    state = read_state(root)
+    assert_phase(state, {"implementation"})
+    assert_no_blockers(state)
+    delta = load_spec_delta(root)
+    config = loop_config(state)
+    spec_dir = workspace / config["spec_dir"]
+    if delta["no_impact_reason"]:
+        record = {
+            "status": "no-impact",
+            "reason": delta["no_impact_reason"],
+            "spec_dir": config["spec_dir"],
+            **{f"{key}_fingerprint": value for key, value in evidence_fingerprint(root, workspace).items()},
+            "recorded_at": now(),
+        }
+        state["spec_merge"] = record
+        write_state(root, state)
+        print("Spec merge recorded: no spec impact (reason kept in spec-delta.md).")
+        return 0
+    problems: list[str] = []
+    merged: dict[str, dict[str, list[str]]] = {}
+    for capability, buckets in delta["capabilities"].items():
+        assert_safe_capability_name(capability)
+        spec_path = spec_dir / f"{capability}.md"
+        if not spec_path.exists():
+            problems.append(f"Missing spec baseline file for capability {capability!r}: {spec_path}")
+            continue
+        text = spec_path.read_text(encoding="utf-8", errors="replace").lower()
+        for title in [*buckets["added"], *buckets["modified"]]:
+            if f"#### requirement: {title.lower()}" not in text:
+                problems.append(f"{spec_path.name} is missing '#### Requirement: {title}' declared in spec-delta.md.")
+        for title in buckets["removed"]:
+            if f"#### requirement: {title.lower()}" in text:
+                problems.append(f"{spec_path.name} still contains removed requirement '#### Requirement: {title}'.")
+        merged[capability] = buckets
+    if problems:
+        raise SystemExit("Spec baseline does not match spec-delta.md:\n- " + "\n- ".join(problems))
+    record = {
+        "status": "merged",
+        "spec_dir": config["spec_dir"],
+        "capabilities": merged,
+        **{f"{key}_fingerprint": value for key, value in evidence_fingerprint(root, workspace).items()},
+        "recorded_at": now(),
+    }
+    state["spec_merge"] = record
+    write_state(root, state)
+    total = sum(len(buckets["added"]) + len(buckets["modified"]) + len(buckets["removed"]) for buckets in merged.values())
+    print(f"Spec merge recorded: {total} requirement change(s) across {len(merged)} capability file(s) in {config['spec_dir']}/.")
+    return 0
+
+
+def slug_for_archive(value: str) -> str:
+    cleaned = "".join(char if char.isalnum() or char in "-_." else "-" for char in value.strip())
+    cleaned = cleaned.strip("-.")
+    return cleaned or "run"
+
+
+def cmd_archive(args: argparse.Namespace) -> int:
+    """Move the finished run's records out of the working root so the next
+    init starts clean and past runs stay browsable next to the spec baseline."""
+    root = Path(args.root)
+    state = read_state(root)
+    assert_phase(state, {"complete"})
+    branch = state.get("git", {}).get("branch", "")
+    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    archive_base = root.parent / f"{root.name}-archive"
+    dest = archive_base / f"{stamp}-{slug_for_archive(branch)}"
+    if dest.exists():
+        raise SystemExit(f"Archive destination already exists: {dest}")
+    archive_base.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(root), str(dest))
+    print(f"Archived dev loop records to {dest}")
+    return 0
+
+
+def cmd_set_scale(args: argparse.Namespace) -> int:
+    root = Path(args.root)
+    state = read_state(root)
+    target = args.scale
+    if target not in SCALE_INDEX:
+        raise SystemExit(f"Unknown scale: {target!r}; use one of: {', '.join(SCALES)}.")
+    current = loop_scale(state)
+    if target == current:
+        print(f"Scale already {current}.")
+        return 0
+    current_phase = phase(state)
+    if SCALE_INDEX[target] < SCALE_INDEX[current] and current_phase not in {"intake", "planning"}:
+        raise SystemExit(
+            f"Cannot lower scale from {current} to {target} in phase {current_phase}; "
+            "lowering is only allowed during intake or planning. Raising scale is allowed anytime."
+        )
+    state["scale"] = target
+    history = state.setdefault("scale_history", [])
+    history.append({"from": current, "to": target, "phase": current_phase, "at": now()})
+    write_state(root, state)
+    print(f"Scale set to {target} (was {current}).")
+    if SCALE_INDEX[target] > SCALE_INDEX[current]:
+        print("Heavier gates now apply; redo any phase gate the new scale requires (for example risk review).")
+    return 0
+
+
 def cmd_resolve_blocker(args: argparse.Namespace) -> int:
     """Clear recorded blockers so the loop can recover without hand-editing state.
 
@@ -1424,7 +2052,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
     automation_level = loop_config(state)["automation_level"]
     findings: list[str] = []
     try:
-        assert_core_artifacts(root)
+        assert_core_artifacts(root, loop_scale(state))
     except SystemExit as exc:
         findings.append(str(exc))
     if args.require_reviews:
@@ -1475,11 +2103,18 @@ def build_parser() -> argparse.ArgumentParser:
     init = sub.add_parser("init")
     init.add_argument("--source", default="")
     init.add_argument("--source-type", choices=sorted(SOURCE_TYPES), default="markdown")
+    init.add_argument("--scale", choices=SCALES, default="", help="Task scale; defaults to default_scale from config.")
+    init.add_argument("--draft", action="store_true", help="Start with a skeleton source.md and clarify Goal/Acceptance Criteria in the intake phase.")
+    init.add_argument("--force", action="store_true", help="Overwrite the state of an existing (unarchived) loop.")
     init.set_defaults(func=cmd_init)
 
     phase = sub.add_parser("set-phase")
     phase.add_argument("phase")
     phase.set_defaults(func=cmd_set_phase)
+
+    scale = sub.add_parser("set-scale")
+    scale.add_argument("scale", choices=SCALES)
+    scale.set_defaults(func=cmd_set_scale)
 
     fingerprint = sub.add_parser("fingerprint")
     fingerprint.set_defaults(func=cmd_fingerprint)
@@ -1501,9 +2136,27 @@ def build_parser() -> argparse.ArgumentParser:
     test = sub.add_parser("run-test")
     test.add_argument("--unit", required=True)
     test.add_argument("--command", required=True)
+    test.add_argument("--stage", choices=sorted(TEST_STAGES), default="green", help="red records failing TDD evidence; green is the pass gate.")
     test.add_argument("--timeout", type=int, default=600)
-    test.add_argument("--test-gate-script", default=str(DEFAULT_TEST_GATE_SCRIPT))
+    test.add_argument("--test-gate-script", default="", help="Defaults to config override, companion skill, or bundled test_gate.py.")
     test.set_defaults(func=cmd_run_test)
+
+    record_test = sub.add_parser("record-test")
+    record_test.add_argument("--unit", required=True)
+    record_test.add_argument("--meta", required=True, help="AUTODEV_TEST_META JSON produced by the test gate inside the worktree.")
+    record_test.add_argument("--worktree", required=True, help="Linked git worktree where the unit-implementer ran the gate.")
+    record_test.add_argument("--stage", choices=sorted(TEST_STAGES), default="green")
+    record_test.set_defaults(func=cmd_record_test)
+
+    verify = sub.add_parser("verify-units")
+    verify.add_argument("--timeout", type=int, default=600)
+    verify.set_defaults(func=cmd_verify_units)
+
+    spec_merge = sub.add_parser("record-spec-merge")
+    spec_merge.set_defaults(func=cmd_record_spec_merge)
+
+    archive = sub.add_parser("archive")
+    archive.set_defaults(func=cmd_archive)
 
     quality = sub.add_parser("run-quality")
     quality.add_argument("--out-dir", default="")
@@ -1532,7 +2185,7 @@ def build_parser() -> argparse.ArgumentParser:
     cloud.set_defaults(func=cmd_record_cloud)
 
     resolve = sub.add_parser("resolve-blocker")
-    resolve.add_argument("--reason", required=True, help="How the blocker was addressed; recorded in decision-log.md.")
+    resolve.add_argument("--reason", required=True, help="How the blocker was addressed; recorded in blocker-resolutions.md.")
     resolve.set_defaults(func=cmd_resolve_blocker)
 
     validate = sub.add_parser("validate")

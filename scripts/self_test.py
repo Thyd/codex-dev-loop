@@ -12,14 +12,31 @@ import sys
 import tempfile
 
 
-CORE_ARTIFACTS = ["source.md", "technical-design.md", "test-plan.md", "risk-analysis.md", "development-plan.md", "decision-log.md"]
+CORE_ARTIFACTS = ["source.md", "technical-design.md", "test-plan.md", "risk-analysis.md", "development-plan.md", "spec-delta.md", "decision-log.md"]
 SOURCE = "# Source\n\n## Goal\n\nShip feature.\n\n## Acceptance Criteria\n\n- Works.\n"
+SPEC_DELTA_NO_IMPACT = "# Spec Delta\n\n## No Spec Impact\n\nSelf-test fixture only touches app.txt; no requirement-level change.\n"
+SPEC_DELTA_CAPABILITY = (
+    "# Spec Delta\n\n## Capability: app-core\n\n### ADDED Requirements\n\n"
+    "#### Requirement: App stores feature flag\n\nThe app records the feature state.\n\n"
+    "### MODIFIED Requirements\n\n### REMOVED Requirements\n"
+)
+SPEC_DELTA_REMOVED = (
+    "# Spec Delta\n\n## Capability: app-core\n\n### ADDED Requirements\n\n### MODIFIED Requirements\n\n"
+    "### REMOVED Requirements\n\n#### Requirement: App stores feature flag\n"
+)
+SPEC_BASELINE_APP_CORE = "# app-core Specification\n\n#### Requirement: App stores feature flag\n\nThe app records the feature state.\n"
+DEV_PLAN_TDD_RED = (
+    "# Development Plan\n\n## Unit dev-001\n\n- Objective: implement feature\n- Scope: app.txt\n"
+    "- Acceptance: app.txt is updated\n- Test gate: harness run-test\n- TDD: red\n- Dependencies: none\n"
+    "- Status: pending\n- Evidence:\n"
+)
 
 ARTIFACTS = {
     "technical-design.md": "# Technical Design\n\n## Goal\n\nShip feature.\n\n## Acceptance Criteria\n\n- Works.\n\n## Proposed Approach\n\nImplement the smallest code path.\n\n## File And Module Scope\n\n- app.txt\n",
     "test-plan.md": "# Test Plan\n\n## Unit Tests\n\nRun a unit gate for every development unit.\n\n## Integration Tests\n\nNone.\n\n## E2E Or Browser Tests\n\nNone.\n\n## Static Gates\n\nRun ai-code-quality-gate.\n\n## Manual Checks\n\nNone.\n\n## Coverage Gaps\n\nNo browser coverage needed.\n",
     "risk-analysis.md": "# Risk Analysis\n\n## Correctness Risks\n\nImplementation could miss the acceptance criteria.\n\n## Security Risks\n\nNo new security surface.\n\n## Data Or Migration Risks\n\nNo migration.\n\n## Architecture Risks\n\nKeep the change local.\n\n## Compatibility Risks\n\nNo compatibility risk.\n\n## External Service Or Credential Risks\n\nGitHub only.\n\n## Mitigations\n\nUse reviews and gates.\n",
-    "development-plan.md": "# Development Plan\n\n## Unit dev-001\n\n- Objective: implement feature\n- Scope: app.txt\n- Acceptance: app.txt is updated\n- Test gate: harness run-test\n- Dependencies: none\n- Status: pending\n- Evidence:\n",
+    "development-plan.md": "# Development Plan\n\n## Unit dev-001\n\n- Objective: implement feature\n- Scope: app.txt\n- Acceptance: app.txt is updated\n- Test gate: harness run-test\n- TDD: regression-only\n- Dependencies: none\n- Status: pending\n- Evidence:\n",
+    "spec-delta.md": SPEC_DELTA_NO_IMPACT,
     "decision-log.md": "# Decision Log\n\n## 2026-01-01 00:00\n\n- Decision: use local file\n- Reason: smallest test fixture\n- Alternatives: none\n- Evidence: source.md\n",
 }
 
@@ -167,6 +184,7 @@ def append_dev_002(root: Path) -> None:
             "- Scope: app.txt\n"
             "- Acceptance: still works\n"
             "- Test gate: harness run-test\n"
+            "- TDD: regression-only\n"
             "- Dependencies: dev-001\n"
             "- Status: pending\n"
             "- Evidence:\n"
@@ -184,7 +202,12 @@ def init_git_repo(workspace: Path, branch: str = "codex/test") -> None:
     must(["git", "checkout", "-b", branch], workspace)
 
 
-def init_loop(harness: Path, tmp: Path, config_path: Path | None = None) -> tuple[Path, Path]:
+def init_loop(
+    harness: Path,
+    tmp: Path,
+    config_path: Path | None = None,
+    extra_init_args: list[str] | None = None,
+) -> tuple[Path, Path]:
     workspace = tmp / "repo"
     workspace.mkdir()
     init_git_repo(workspace)
@@ -194,12 +217,43 @@ def init_loop(harness: Path, tmp: Path, config_path: Path | None = None) -> tupl
     if config_path:
         command.extend(["--config", str(config_path)])
     command.extend(["init", "--source", str(source)])
+    command.extend(extra_init_args or [])
     result = run(command)
     if result.returncode != 0:
         print(result.stdout)
         raise SystemExit("Expected harness init to pass.")
+    to_planning = run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "planning"])
+    if to_planning.returncode != 0:
+        print(to_planning.stdout)
+        raise SystemExit("Expected intake -> planning transition to pass for a complete source.")
     write_artifacts(root)
     return workspace, root
+
+
+def record_spec_merge(harness: Path, workspace: Path, root: Path) -> subprocess.CompletedProcess:
+    return run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "record-spec-merge"])
+
+
+def must_record_spec_merge(harness: Path, workspace: Path, root: Path) -> None:
+    result = record_spec_merge(harness, workspace, root)
+    if result.returncode != 0:
+        print(result.stdout)
+        raise SystemExit("Expected record-spec-merge to pass.")
+
+
+def run_bundled_test_gate(unit: str, command: str, cwd: Path) -> Path:
+    """Run the bundled test gate directly (as a worktree unit-implementer
+    would) and return the AUTODEV_TEST_META path."""
+    gate = Path(__file__).with_name("test_gate.py").resolve()
+    result = run([sys.executable, str(gate), "--unit", unit, "--command", command, "--cwd", str(cwd)])
+    meta = ""
+    for raw_line in result.stdout.splitlines():
+        if raw_line.strip().startswith("AUTODEV_TEST_META="):
+            meta = raw_line.strip().split("=", 1)[1]
+    if not meta:
+        print(result.stdout)
+        raise SystemExit("Bundled test gate did not report AUTODEV_TEST_META.")
+    return Path(meta)
 
 
 def review_text(role: str, agent_id: str, root: Path, workspace: Path, body: str) -> str:
@@ -240,22 +294,23 @@ def record_plan_review(harness: Path, workspace: Path, root: Path, tmp: Path) ->
         raise SystemExit("Expected passing plan review to record.")
 
 
-def run_test(harness: Path, workspace: Path, root: Path, unit: str, command: str) -> subprocess.CompletedProcess:
-    return run(
-        [
-            sys.executable,
-            str(harness),
-            "--workspace",
-            str(workspace),
-            "--root",
-            str(root),
-            "run-test",
-            "--unit",
-            unit,
-            "--command",
-            command,
-        ]
-    )
+def run_test(harness: Path, workspace: Path, root: Path, unit: str, command: str, stage: str = "") -> subprocess.CompletedProcess:
+    invocation = [
+        sys.executable,
+        str(harness),
+        "--workspace",
+        str(workspace),
+        "--root",
+        str(root),
+        "run-test",
+        "--unit",
+        unit,
+        "--command",
+        command,
+    ]
+    if stage:
+        invocation.extend(["--stage", stage])
+    return run(invocation)
 
 
 def record_review(harness: Path, workspace: Path, root: Path, tmp: Path, role: str, body: str) -> subprocess.CompletedProcess:
@@ -289,9 +344,8 @@ def run_quality(
     require: str = "",
     gate_names: list[str] | None = None,
 ) -> subprocess.CompletedProcess:
-    quality_script = Path.home() / ".codex" / "skills" / "ai-code-quality-gate" / "scripts" / "quality_gate.py"
-    if not quality_script.exists():
-        raise SystemExit(f"Missing ai-code-quality-gate script for self-test: {quality_script}")
+    # The harness resolves the quality gate script itself (companion skill or
+    # bundled fallback); the self-test stays hermetic either way.
     alignment = workspace / ".codex" / "quality-gate" / "subagent-alignment.md"
     alignment.parent.mkdir(parents=True, exist_ok=True)
     alignment.write_text(IMPLEMENTATION_REVIEW_BODY, encoding="utf-8")
@@ -376,6 +430,11 @@ def write_fake_codex_home(tmp: Path) -> tuple[Path, Path]:
 
 def main() -> int:
     os.environ["CODEX_DEV_LOOP_TEST_MODE"] = "1"
+    # Point the loop home at an empty directory so every scenario exercises
+    # the bundled gate fallbacks; the self-test must pass on machines without
+    # the companion skills installed. Resolution priority gets its own test.
+    session_home = Path(tempfile.mkdtemp(prefix="codex-dev-loop-home-"))
+    os.environ["CODEX_DEV_LOOP_HOME"] = str(session_home)
     configurator = Path(__file__).with_name("configure_dev_loop.py").resolve()
     validator = Path(__file__).with_name("validate_dev_loop_artifacts.py").resolve()
     harness = Path(__file__).with_name("dev_loop_harness.py").resolve()
@@ -391,6 +450,10 @@ def main() -> int:
         if data.get("automation_level") != "pr_without_merge" or data.get("quality_profile") != "standard" or data.get("test_failure_limit") != 3:
             print(json.dumps(data, indent=2, ensure_ascii=False))
             print("Expected default first-run config values.")
+            return 1
+        if data.get("schema_version") != 2 or data.get("default_scale") != "standard" or data.get("spec_dir") != "specs":
+            print(json.dumps(data, indent=2, ensure_ascii=False))
+            print("Expected schema v2 defaults from the configuration wizard.")
             return 1
 
     with tempfile.TemporaryDirectory(prefix="codex-dev-loop-self-test-") as raw_tmp:
@@ -505,6 +568,27 @@ def main() -> int:
             print(blocked_by_config.stdout)
             print("Expected planning_only automation config to block branch phase.")
             return 1
+        archived = run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "archive"])
+        if archived.returncode != 0:
+            print(archived.stdout)
+            print("Expected archive to move the completed loop records.")
+            return 1
+        if (root / "loop-state.json").exists():
+            print("Expected archive to move loop-state.json out of the working root.")
+            return 1
+        archive_base = root.parent / f"{root.name}-archive"
+        archived_runs = list(archive_base.glob("*/loop-state.json"))
+        if len(archived_runs) != 1:
+            print(f"Expected exactly one archived run under {archive_base}.")
+            return 1
+        source = write_source(tmp)
+        fresh_init = run(
+            [sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "--config", str(config_path), "init", "--source", str(source)]
+        )
+        if fresh_init.returncode != 0:
+            print(fresh_init.stdout)
+            print("Expected init to start cleanly after archive without --force.")
+            return 1
 
     with tempfile.TemporaryDirectory(prefix="codex-dev-loop-source-type-test-") as raw_tmp:
         tmp = Path(raw_tmp)
@@ -610,6 +694,357 @@ def main() -> int:
             print("Expected the failure counter to reset after resolve-blocker.")
             return 1
 
+    with tempfile.TemporaryDirectory(prefix="codex-dev-loop-intake-test-") as raw_tmp:
+        tmp = Path(raw_tmp)
+        workspace = tmp / "repo"
+        workspace.mkdir()
+        init_git_repo(workspace)
+        root = workspace / ".codex" / "dev-loop"
+        base = [sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root)]
+        drafted = run([*base, "init", "--draft"])
+        if drafted.returncode != 0:
+            print(drafted.stdout)
+            print("Expected init --draft to start a clarification-first loop.")
+            return 1
+        state_data = json.loads((root / "loop-state.json").read_text(encoding="utf-8"))
+        if state_data.get("phase") != "intake":
+            print("Expected init to start in the intake phase.")
+            return 1
+        if not (root / "clarification-log.md").exists():
+            print("Expected init to create clarification-log.md.")
+            return 1
+        unclear = run([*base, "set-phase", "planning"])
+        if unclear.returncode == 0:
+            print(unclear.stdout)
+            print("Expected planning to be blocked while Goal and Acceptance Criteria are empty.")
+            return 1
+        (root / "source.md").write_text(SOURCE, encoding="utf-8")
+        clarified = run([*base, "set-phase", "planning"])
+        if clarified.returncode != 0:
+            print(clarified.stdout)
+            print("Expected planning to open once the clarified source has Goal and Acceptance Criteria.")
+            return 1
+        reinit = run([*base, "init", "--draft"])
+        if reinit.returncode == 0:
+            print(reinit.stdout)
+            print("Expected init to refuse overwriting an unarchived loop without --force.")
+            return 1
+        back_to_intake = run([*base, "set-phase", "intake"])
+        if back_to_intake.returncode != 0:
+            print(back_to_intake.stdout)
+            print("Expected planning -> intake backtrack for re-clarification.")
+            return 1
+        forced = run([*base, "init", "--draft", "--force"])
+        if forced.returncode != 0:
+            print(forced.stdout)
+            print("Expected init --force to restart the loop state.")
+            return 1
+
+    with tempfile.TemporaryDirectory(prefix="codex-dev-loop-tdd-test-") as raw_tmp:
+        tmp = Path(raw_tmp)
+        workspace, root = init_loop(harness, tmp)
+        (root / "development-plan.md").write_text(DEV_PLAN_TDD_RED.replace("- TDD: red", "- TDD: bogus"), encoding="utf-8")
+        invalid_mode = run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "plan_review"])
+        if invalid_mode.returncode == 0:
+            print(invalid_mode.stdout)
+            print("Expected invalid '- TDD:' value to fail artifact validation.")
+            return 1
+        (root / "development-plan.md").write_text(DEV_PLAN_TDD_RED, encoding="utf-8")
+        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "plan_review"])
+        record_plan_review(harness, workspace, root, tmp)
+        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "branch"])
+        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "record-branch", "--branch", "codex/test"])
+        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "implementation"])
+        green_without_red = run_test(harness, workspace, root, "dev-001", pass_command())
+        if green_without_red.returncode == 0:
+            print(green_without_red.stdout)
+            print("Expected the green stage to be rejected before red-stage TDD evidence exists.")
+            return 1
+        red_that_passes = run_test(harness, workspace, root, "dev-001", pass_command(), stage="red")
+        if red_that_passes.returncode == 0:
+            print(red_that_passes.stdout)
+            print("Expected a red-stage run that passes to be flagged as not proving the behavior.")
+            return 1
+        still_no_green = run_test(harness, workspace, root, "dev-001", pass_command())
+        if still_no_green.returncode == 0:
+            print(still_no_green.stdout)
+            print("Expected an unexpectedly-passing red run to not unlock the green stage.")
+            return 1
+        red = run_test(harness, workspace, root, "dev-001", fail_command(), stage="red")
+        if red.returncode != 0:
+            print(red.stdout)
+            print("Expected a failing red-stage run to record TDD evidence.")
+            return 1
+        (workspace / "app.txt").write_text("tdd feature\n", encoding="utf-8")
+        green = run_test(harness, workspace, root, "dev-001", pass_command())
+        if green.returncode != 0:
+            print(green.stdout)
+            print("Expected the green stage to pass after red evidence exists.")
+            return 1
+        must_record_spec_merge(harness, workspace, root)
+        to_review = run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "implementation_review"])
+        if to_review.returncode != 0:
+            print(to_review.stdout)
+            print("Expected implementation_review to open after red evidence, green pass, and spec merge.")
+            return 1
+
+    with tempfile.TemporaryDirectory(prefix="codex-dev-loop-worktree-test-") as raw_tmp:
+        tmp = Path(raw_tmp)
+        workspace, root = init_loop(harness, tmp)
+        (root / "development-plan.md").write_text(DEV_PLAN_TDD_RED, encoding="utf-8")
+        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "plan_review"])
+        record_plan_review(harness, workspace, root, tmp)
+        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "branch"])
+        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "record-branch", "--branch", "codex/test"])
+        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "implementation"])
+        worktree = tmp / "wt-dev-001"
+        must(["git", "worktree", "add", str(worktree), "-b", "codex/wt-dev-001"], workspace)
+        not_a_worktree = tmp / "plain-dir"
+        not_a_worktree.mkdir()
+        red_meta = run_bundled_test_gate("dev-001", fail_command(), worktree)
+        rejected = run(
+            [sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "record-test", "--unit", "dev-001", "--meta", str(red_meta), "--worktree", str(not_a_worktree)]
+        )
+        if rejected.returncode == 0:
+            print(rejected.stdout)
+            print("Expected record-test to reject a directory that is not a linked worktree.")
+            return 1
+        recorded_red = run(
+            [sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "record-test", "--unit", "dev-001", "--meta", str(red_meta), "--worktree", str(worktree), "--stage", "red"]
+        )
+        if recorded_red.returncode != 0:
+            print(recorded_red.stdout)
+            print("Expected record-test to record red evidence from the worktree.")
+            return 1
+        (worktree / "app.txt").write_text("worktree feature\n", encoding="utf-8")
+        must(["git", "add", "app.txt"], worktree)
+        must(["git", "commit", "-m", "feat: unit dev-001"], worktree)
+        green_meta = run_bundled_test_gate("dev-001", pass_command(), worktree)
+        recorded_green = run(
+            [sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "record-test", "--unit", "dev-001", "--meta", str(green_meta), "--worktree", str(worktree)]
+        )
+        if recorded_green.returncode != 0:
+            print(recorded_green.stdout)
+            print("Expected record-test to record green evidence from the worktree.")
+            return 1
+        must(["git", "merge", "--no-edit", "codex/wt-dev-001"], workspace)
+        (workspace / "app.txt").write_text("worktree feature\nintegration tweak\n", encoding="utf-8")
+        stale_worktree_green = run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "implementation_review"])
+        if stale_worktree_green.returncode == 0:
+            print(stale_worktree_green.stdout)
+            print("Expected interim worktree evidence to not satisfy the final gate after the main tree diverged.")
+            return 1
+        verified = run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "verify-units"])
+        if verified.returncode != 0:
+            print(verified.stdout)
+            print("Expected verify-units to re-run every unit gate in the main workspace.")
+            return 1
+        must_record_spec_merge(harness, workspace, root)
+        to_review = run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "implementation_review"])
+        if to_review.returncode != 0:
+            print(to_review.stdout)
+            print("Expected implementation_review to open after verify-units and spec merge.")
+            return 1
+
+    with tempfile.TemporaryDirectory(prefix="codex-dev-loop-spec-merge-test-") as raw_tmp:
+        tmp = Path(raw_tmp)
+        workspace, root = init_loop(harness, tmp)
+        ambiguous = SPEC_DELTA_CAPABILITY + "\n## No Spec Impact\n\nAlso claiming no impact.\n"
+        (root / "spec-delta.md").write_text(ambiguous, encoding="utf-8")
+        ambiguous_check = run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "plan_review"])
+        if ambiguous_check.returncode == 0:
+            print(ambiguous_check.stdout)
+            print("Expected an ambiguous spec-delta (capability changes plus no-impact) to fail validation.")
+            return 1
+        (root / "spec-delta.md").write_text(SPEC_DELTA_CAPABILITY, encoding="utf-8")
+        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "plan_review"])
+        record_plan_review(harness, workspace, root, tmp)
+        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "branch"])
+        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "record-branch", "--branch", "codex/test"])
+        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "implementation"])
+        missing_baseline = record_spec_merge(harness, workspace, root)
+        if missing_baseline.returncode == 0:
+            print(missing_baseline.stdout)
+            print("Expected record-spec-merge to fail while the capability baseline file is missing.")
+            return 1
+        specs_dir = workspace / "specs"
+        specs_dir.mkdir()
+        (specs_dir / "app-core.md").write_text(SPEC_BASELINE_APP_CORE, encoding="utf-8")
+        (workspace / "app.txt").write_text("spec feature\n", encoding="utf-8")
+        run_test(harness, workspace, root, "dev-001", pass_command())
+        must_record_spec_merge(harness, workspace, root)
+        to_review = run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "implementation_review"])
+        if to_review.returncode != 0:
+            print(to_review.stdout)
+            print("Expected implementation_review to open after the spec baseline merge.")
+            return 1
+        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "implementation"])
+        (root / "spec-delta.md").write_text(SPEC_DELTA_REMOVED, encoding="utf-8")
+        removed_still_present = record_spec_merge(harness, workspace, root)
+        if removed_still_present.returncode == 0:
+            print(removed_still_present.stdout)
+            print("Expected record-spec-merge to fail while a REMOVED requirement is still in the baseline.")
+            return 1
+
+    with tempfile.TemporaryDirectory(prefix="codex-dev-loop-scale-test-") as raw_tmp:
+        tmp = Path(raw_tmp)
+        workspace, root = init_loop(harness, tmp, extra_init_args=["--scale", "small"])
+        (root / "test-plan.md").write_text("# Test Plan\n\n## Unit Tests\n\n## Integration Tests\n\n## E2E Or Browser Tests\n\n## Static Gates\n\n## Manual Checks\n\n## Coverage Gaps\n", encoding="utf-8")
+        (root / "risk-analysis.md").write_text("# Risk Analysis\n\n## Correctness Risks\n\n## Security Risks\n\n## Data Or Migration Risks\n\n## Architecture Risks\n\n## Compatibility Risks\n\n## External Service Or Credential Risks\n\n## Mitigations\n", encoding="utf-8")
+        relaxed = run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "plan_review"])
+        if relaxed.returncode != 0:
+            print(relaxed.stdout)
+            print("Expected small scale to accept condensed test-plan and risk-analysis artifacts.")
+            return 1
+        record_plan_review(harness, workspace, root, tmp)
+        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "branch"])
+        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "record-branch", "--branch", "codex/test"])
+        (workspace / "app.txt").write_text("small feature\n", encoding="utf-8")
+        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "implementation"])
+        run_test(harness, workspace, root, "dev-001", pass_command())
+        must_record_spec_merge(harness, workspace, root)
+        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "implementation_review"])
+        impl = record_review(harness, workspace, root, tmp, "implementation-reviewer", IMPLEMENTATION_REVIEW_BODY)
+        if impl.returncode != 0:
+            print(impl.stdout)
+            return 1
+        skip_clean = run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "quality_gate"])
+        if skip_clean.returncode != 0:
+            print(skip_clean.stdout)
+            print("Expected small scale to skip risk_review for a non-sensitive change set.")
+            return 1
+
+    with tempfile.TemporaryDirectory(prefix="codex-dev-loop-scale-guard-test-") as raw_tmp:
+        tmp = Path(raw_tmp)
+        workspace, root = init_loop(harness, tmp, extra_init_args=["--scale", "small"])
+        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "plan_review"])
+        record_plan_review(harness, workspace, root, tmp)
+        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "branch"])
+        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "record-branch", "--branch", "codex/test"])
+        (workspace / "app.txt").write_text("guarded feature\n", encoding="utf-8")
+        (workspace / "package.json").write_text("{}\n", encoding="utf-8")
+        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "implementation"])
+        run_test(harness, workspace, root, "dev-001", pass_command())
+        must_record_spec_merge(harness, workspace, root)
+        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "implementation_review"])
+        impl = record_review(harness, workspace, root, tmp, "implementation-reviewer", IMPLEMENTATION_REVIEW_BODY)
+        if impl.returncode != 0:
+            print(impl.stdout)
+            return 1
+        guarded = run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "quality_gate"])
+        if guarded.returncode == 0:
+            print(guarded.stdout)
+            print("Expected the sensitive-path guard to refuse the small-scale risk_review skip.")
+            return 1
+        raised = run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-scale", "standard"])
+        if raised.returncode != 0:
+            print(raised.stdout)
+            print("Expected raising scale to be allowed at any phase.")
+            return 1
+        lowered = run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-scale", "small"])
+        if lowered.returncode == 0:
+            print(lowered.stdout)
+            print("Expected lowering scale after planning to be refused.")
+            return 1
+        to_risk = run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "risk_review"])
+        if to_risk.returncode != 0:
+            print(to_risk.stdout)
+            print("Expected risk_review to open at standard scale with full artifacts.")
+            return 1
+        risk = record_review(harness, workspace, root, tmp, "risk-reviewer", RISK_REVIEW_BODY)
+        if risk.returncode != 0:
+            print(risk.stdout)
+            return 1
+        risk_path = run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "quality_gate"])
+        if risk_path.returncode != 0:
+            print(risk_path.stdout)
+            print("Expected quality_gate to open after a real risk review at standard scale.")
+            return 1
+
+    with tempfile.TemporaryDirectory(prefix="codex-dev-loop-config-migration-test-") as raw_tmp:
+        tmp = Path(raw_tmp)
+        v1_config = tmp / "v1.json"
+        v1_config.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "automation_level": "pr_without_merge",
+                    "source_types": ["markdown"],
+                    "quality_profile": "standard",
+                    "test_failure_limit": 3,
+                    "risk_mode": "stop_and_ask",
+                }
+            ),
+            encoding="utf-8",
+        )
+        workspace, root = init_loop(harness, tmp, config_path=v1_config)
+        state_data = json.loads((root / "loop-state.json").read_text(encoding="utf-8"))
+        migrated = state_data.get("config", {})
+        if migrated.get("schema_version") != 2 or migrated.get("default_scale") != "standard" or migrated.get("spec_dir") != "specs":
+            print(json.dumps(migrated, indent=2))
+            print("Expected schema v1 config to migrate to v2 defaults at init.")
+            return 1
+
+    with tempfile.TemporaryDirectory(prefix="codex-dev-loop-gate-resolution-test-") as raw_tmp:
+        tmp = Path(raw_tmp)
+        priority_home = tmp / "loop-home"
+        companion = priority_home / "skills" / "automated-dev-executor" / "scripts" / "test_gate.py"
+        companion.parent.mkdir(parents=True)
+        companion_marker = tmp / "companion-ran.txt"
+        bundled_gate = Path(__file__).with_name("test_gate.py").resolve()
+        companion.write_text(
+            "import runpy, sys\nfrom pathlib import Path\n"
+            f"Path({str(companion_marker)!r}).write_text('ran', encoding='utf-8')\n"
+            f"sys.argv[0] = {str(bundled_gate)!r}\n"
+            f"runpy.run_path({str(bundled_gate)!r}, run_name='__main__')\n",
+            encoding="utf-8",
+        )
+        env = {**os.environ, "CODEX_DEV_LOOP_HOME": str(priority_home)}
+        workspace = tmp / "repo"
+        workspace.mkdir()
+        init_git_repo(workspace)
+        root = workspace / ".codex" / "dev-loop"
+        source = write_source(tmp)
+        base = [sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root)]
+        for step in (
+            [*base, "init", "--source", str(source)],
+            [*base, "set-phase", "planning"],
+        ):
+            result = run(step, env=env)
+            if result.returncode != 0:
+                print(result.stdout)
+                print("Expected gate-resolution loop setup to pass.")
+                return 1
+        write_artifacts(root)
+        for step in ([*base, "set-phase", "plan_review"],):
+            result = run(step, env=env)
+            if result.returncode != 0:
+                print(result.stdout)
+                return 1
+        agent_id = "019f-plan-reviewer"
+        report = write_review(tmp, "plan-review.md", "plan-reviewer", agent_id, root, workspace, PLAN_REVIEW_BODY)
+        result = run([*base, "record-review", "--role", "plan-reviewer", "--agent-id", agent_id, "--report", str(report)], env=env)
+        if result.returncode != 0:
+            print(result.stdout)
+            return 1
+        for step in (
+            [*base, "set-phase", "branch"],
+            [*base, "record-branch", "--branch", "codex/test"],
+            [*base, "set-phase", "implementation"],
+        ):
+            result = run(step, env=env)
+            if result.returncode != 0:
+                print(result.stdout)
+                return 1
+        gate_run = run([*base, "run-test", "--unit", "dev-001", "--command", pass_command()], env=env)
+        if gate_run.returncode != 0:
+            print(gate_run.stdout)
+            print("Expected run-test to pass via the relocated companion test gate.")
+            return 1
+        if not companion_marker.exists():
+            print("Expected the companion skill test gate under CODEX_DEV_LOOP_HOME to take priority over the bundled fallback.")
+            return 1
+
     with tempfile.TemporaryDirectory(prefix="codex-dev-loop-all-units-test-") as raw_tmp:
         tmp = Path(raw_tmp)
         workspace, root = init_loop(harness, tmp)
@@ -637,6 +1072,12 @@ def main() -> int:
         (workspace / "app.txt").write_text("feature\n", encoding="utf-8")
         run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "implementation"])
         run_test(harness, workspace, root, "dev-001", pass_command())
+        blocked_without_spec_merge = run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "implementation_review"])
+        if blocked_without_spec_merge.returncode == 0:
+            print(blocked_without_spec_merge.stdout)
+            print("Expected implementation_review transition to require record-spec-merge.")
+            return 1
+        must_record_spec_merge(harness, workspace, root)
         run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "implementation_review"])
         impl = record_review(harness, workspace, root, tmp, "implementation-reviewer", IMPLEMENTATION_REVIEW_BODY)
         if impl.returncode != 0:
@@ -664,6 +1105,7 @@ def main() -> int:
         (workspace / "app.txt").write_text("feature\n", encoding="utf-8")
         run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "implementation"])
         run_test(harness, workspace, root, "dev-001", pass_command())
+        must_record_spec_merge(harness, workspace, root)
         run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "implementation_review"])
         impl = record_review(harness, workspace, root, tmp, "implementation-reviewer", IMPLEMENTATION_REVIEW_BODY)
         if impl.returncode != 0:
@@ -704,6 +1146,7 @@ def main() -> int:
         (workspace / "app.txt").write_text("commit-only feature\n", encoding="utf-8")
         run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "implementation"])
         run_test(harness, workspace, root, "dev-001", pass_command())
+        must_record_spec_merge(harness, workspace, root)
         run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "implementation_review"])
         impl = record_review(harness, workspace, root, tmp, "implementation-reviewer", IMPLEMENTATION_REVIEW_BODY)
         if impl.returncode != 0:
@@ -766,6 +1209,7 @@ def main() -> int:
             print("Expected code changes after tests to stale test evidence.")
             return 1
         run_test(harness, workspace, root, "dev-001", pass_command())
+        must_record_spec_merge(harness, workspace, root)
 
         run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "implementation_review"])
         impl = record_review(harness, workspace, root, tmp, "implementation-reviewer", IMPLEMENTATION_REVIEW_BODY)
@@ -782,6 +1226,7 @@ def main() -> int:
             return 1
         run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "implementation"])
         run_test(harness, workspace, root, "dev-001", pass_command())
+        must_record_spec_merge(harness, workspace, root)
         run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "implementation_review"])
         impl = record_review(harness, workspace, root, tmp, "implementation-reviewer", IMPLEMENTATION_REVIEW_BODY)
         if impl.returncode != 0:

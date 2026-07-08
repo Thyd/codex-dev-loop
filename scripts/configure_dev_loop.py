@@ -9,8 +9,26 @@ import json
 from pathlib import Path
 
 
-DEFAULT_OUTPUT = Path.home() / ".codex" / "config" / "codex-dev-loop.json"
-SCHEMA_VERSION = 1
+import os
+
+
+def default_output() -> Path:
+    override = os.environ.get("CODEX_DEV_LOOP_HOME", "").strip()
+    home = Path(override).expanduser() if override else Path.home() / ".codex"
+    return home / "config" / "codex-dev-loop.json"
+
+
+DEFAULT_OUTPUT = default_output()
+SCHEMA_VERSION = 2
+
+# Advanced keys kept out of the five-question wizard on purpose; they get
+# safe defaults here and can be edited in the JSON directly.
+ADVANCED_DEFAULTS = {
+    "default_scale": "standard",
+    "spec_dir": "specs",
+    "test_gate_script": "",
+    "quality_gate_script": "",
+}
 
 QUESTIONS = {
     "automation_level": {
@@ -105,7 +123,22 @@ def choose(key: str, supplied: str | None, non_interactive: bool) -> str:
         print("输入无效，请重新选择。")
 
 
-def build_config(args: argparse.Namespace) -> dict:
+def load_existing_advanced(output: Path) -> dict:
+    """Preserve previously configured advanced keys when re-running the wizard."""
+    advanced = dict(ADVANCED_DEFAULTS)
+    if output.exists():
+        try:
+            existing = json.loads(output.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return advanced
+        if isinstance(existing, dict):
+            for key in ADVANCED_DEFAULTS:
+                if key in existing:
+                    advanced[key] = existing[key]
+    return advanced
+
+
+def build_config(args: argparse.Namespace, output: Path) -> dict:
     automation_level = choose("automation_level", args.automation_level, args.non_interactive)
     source_choice = choose("source_types", args.source_types, args.non_interactive)
     quality_profile = choose("quality_profile", args.quality_profile, args.non_interactive)
@@ -119,6 +152,7 @@ def build_config(args: argparse.Namespace) -> dict:
         "quality_profile": quality_profile,
         "test_failure_limit": int(test_failure_limit),
         "risk_mode": risk_mode,
+        **load_existing_advanced(output),
     }
 
 
@@ -151,12 +185,16 @@ def print_summary(config: dict, output: Path) -> None:
         f"自动化范围当前的设置是“{LABELS['automation_level'][config['automation_level']]}”；"
         "如后续需要调整自动化范围、需求来源、质量门严格度、测试重试次数或风险处理方式，也请随时告知我。"
     )
+    print(
+        f"高级选项（默认任务规模 default_scale={config['default_scale']}、规格基线目录 spec_dir={config['spec_dir']}、"
+        "gate 脚本路径覆盖）可直接编辑配置文件调整。"
+    )
 
 
 def main() -> int:
     args = parse_args()
     output = Path(args.output).expanduser()
-    config = build_config(args)
+    config = build_config(args, output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print_summary(config, output)

@@ -16,6 +16,7 @@ REQUIRED_FILES = [
     "test-plan.md",
     "risk-analysis.md",
     "development-plan.md",
+    "spec-delta.md",
     "decision-log.md",
 ]
 
@@ -32,6 +33,7 @@ REQUIRED_HEADINGS = {
     "test-plan.md": ["# Test Plan", "## Unit Tests", "## Static Gates", "## Coverage Gaps"],
     "risk-analysis.md": ["# Risk Analysis", "## Correctness Risks", "## Security Risks", "## Architecture Risks"],
     "development-plan.md": ["# Development Plan", "## Unit dev-001", "- Objective:", "- Test gate:"],
+    "spec-delta.md": ["# Spec Delta"],
     "decision-log.md": ["# Decision Log"],
 }
 
