@@ -1,4 +1,4 @@
----
+﻿---
 name: codex-dev-loop
 description: Run an end-to-end autonomous development loop on Claude Code from a Markdown spec, Notion page, or clarified conversation to reviewed implementation, TDD-gated tests, spec baseline updates, quality gates, git commit, pushed branch, and pull request. Use when the agent must clarify a goal and acceptance criteria, size the task (small/standard/large gates), elaborate technical design, test plan, risk analysis, spec delta, and development plan, run subagent reviews, implement units test-first (optionally in parallel git worktrees), merge spec deltas into the repository spec baseline, enforce quality gates, and open GitHub PRs while stopping on ambiguity, repeated test failures, quality failures, architecture risk, or missing credentials.
 ---
@@ -28,7 +28,7 @@ Re-run the `cp` after every `git pull`.
 | `$ai-code-quality-gate` | Not required. The harness auto-falls back to the bundled `<skill-dir>/scripts/quality_gate_fallback.py`. Pass explicit `--command "gate=<cmd>"` overrides to `run-quality` for gates the fallback cannot autodetect. |
 | `$codex-dev-loop` invocation | The skill triggers via Claude Code's skill mechanism; the user may also invoke it as `/codex-dev-loop`. |
 
-Everything else — phases, `init --draft` clarification, task scale and the sensitive-path guard, TDD red/green stages, `record-test` for worktrees, `verify-units`, `record-spec-merge`, review fingerprints, quality profiles, git/PR flow, `resolve-blocker`, `archive` — is unchanged; run the same `scripts/dev_loop_harness.py` commands with `<skill-dir>` = `~/.claude/skills/codex-dev-loop`.
+Everything else — phases, `init --draft` clarification, task scale and the sensitive-path guard, TDD red/green stages, `record-test` for worktrees, `merge-integrator` before `verify-units`, `record-spec-merge`, `docs-impact-reviewer` before quality, review fingerprints, budget/time-box limits, quality profiles, git/PR flow, `resolve-blocker`, `archive` — is unchanged; run the same `scripts/dev_loop_harness.py` commands with `<skill-dir>` = `~/.claude/skills/codex-dev-loop`.
 
 Example first call:
 
@@ -45,10 +45,13 @@ Use the prompt shapes from [subagent-review-loop.md](../../references/subagent-r
 
 ## Clarification On Claude Code
 
-During the `intake` phase, ask the user clarification questions directly in chat (use the AskUserQuestion tool when available, one focused round at a time), record Q&A in `.codex/dev-loop/clarification-log.md`, and only then `set-phase planning`. If the user is unavailable and a load-bearing question is open, stop with a blocker instead of guessing.
+During the `intake` phase, ask the user clarification questions directly in chat (use the AskUserQuestion tool when available, one focused round at a time), record Q&A in `.codex/dev-loop/clarification-log.md`, run and record `requirements-reviewer` with the current `SOURCE_FINGERPRINT`, and only then `set-phase planning`. If the user is unavailable and a load-bearing question is open, stop with a blocker instead of guessing.
 
 ## Quality Gate Notes
 
 - The bundled fallback autodetects `npm/pnpm/yarn` scripts, `pytest`, `go`, `cargo`, and `semgrep` on PATH; anything else needs a `--command "gate=<cmd>"` override.
 - The `strict` profile expects hosted scanners (Sonar, Qodana, CodeQL) wired through GitHub Actions; on repos without them, use `standard` or `light` and say so in the PR body.
 - External service policy is unchanged: ask the user before calling any non-GitHub hosted service.
+
+
+

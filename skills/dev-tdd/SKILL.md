@@ -32,8 +32,10 @@ python <core> guard-check
 1. **红**：先写会失败的测试，记录红证据（红运行**不计入**失败上限；红却通过会被判定为「测试没证明缺失行为」，需加强测试）：
 
 ```bash
-python <core> standalone-test --label <label> --stage red --command "<失败的测试命令>"
+python <core> standalone-test --label <label> --stage red --expected-failure "<intended missing behavior>" --command "<failing test command>"
 ```
+
+Red failures pass through red-test-validator first; import, syntax, dependency, path, environment, and ambiguous snapshot failures do not unlock green.
 
 2. **实现**：写最小实现让测试转绿。
 

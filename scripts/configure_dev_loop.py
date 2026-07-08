@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """First-run configuration wizard for codex-dev-loop."""
 
 from __future__ import annotations
@@ -19,13 +19,19 @@ def default_output() -> Path:
 
 
 DEFAULT_OUTPUT = default_output()
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # Advanced keys kept out of the five-question wizard on purpose; they get
 # safe defaults here and can be edited in the JSON directly.
 ADVANCED_DEFAULTS = {
     "default_scale": "standard",
     "spec_dir": "specs",
+    "max_units": 8,
+    "max_files_changed": 20,
+    "max_test_retries_per_unit": 3,
+    "max_review_iterations": 3,
+    "max_quality_fix_rounds": 2,
+    "max_diff_lines": 1200,
     "test_gate_script": "",
     "quality_gate_script": "",
     "evidence_dir": "",
@@ -145,6 +151,8 @@ def build_config(args: argparse.Namespace, output: Path) -> dict:
     quality_profile = choose("quality_profile", args.quality_profile, args.non_interactive)
     test_failure_limit = choose("test_failure_limit", args.test_failure_limit, args.non_interactive)
     risk_mode = choose("risk_mode", args.risk_mode, args.non_interactive)
+    advanced = load_existing_advanced(output)
+    advanced["max_test_retries_per_unit"] = int(test_failure_limit)
     return {
         "schema_version": SCHEMA_VERSION,
         "configured_at": dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -153,7 +161,7 @@ def build_config(args: argparse.Namespace, output: Path) -> dict:
         "quality_profile": quality_profile,
         "test_failure_limit": int(test_failure_limit),
         "risk_mode": risk_mode,
-        **load_existing_advanced(output),
+        **advanced,
     }
 
 
@@ -188,7 +196,9 @@ def print_summary(config: dict, output: Path) -> None:
     )
     print(
         f"高级选项（默认任务规模 default_scale={config['default_scale']}、规格基线目录 spec_dir={config['spec_dir']}、"
-        "gate 脚本路径覆盖）可直接编辑配置文件调整。"
+        f"预算 max_units={config['max_units']} / max_files_changed={config['max_files_changed']} / "
+        f"max_review_iterations={config['max_review_iterations']} / max_quality_fix_rounds={config['max_quality_fix_rounds']} / "
+        f"max_diff_lines={config['max_diff_lines']}、gate 脚本路径覆盖）可直接编辑配置文件调整。"
     )
 
 
@@ -204,3 +214,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+

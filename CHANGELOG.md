@@ -1,4 +1,15 @@
-# Changelog
+﻿# Changelog
+
+## 0.5.1 - 2026-07-08
+
+### Added
+
+- Added schema v3 budget/time-box hooks: `max_units`, `max_files_changed`, `max_test_retries_per_unit`, `max_review_iterations`, `max_quality_fix_rounds`, and `max_diff_lines`; reaching a limit records a blocker and stops instead of continuing to expand scope or iterate.
+- Added `docs-impact-reviewer` before the quality gate; it checks whether README, docs/, API reference, changelog, examples, env/config docs, migration notes, or user-facing copy need updates, and blocks quality until the current workspace records `Decision: no-docs-needed`.
+- Added `merge-integrator` for parallel worktree merges; when worktree test evidence exists, `verify-units` is blocked until a current merge-integrator review checks cross-unit duplicate logic, shared-interface assumptions, test-order coupling, hidden route/config/export/schema/type conflicts, and integration-test needs.
+- Added `scope-check` plus scope-drift hooks after unit green, worktree green records, before spec merge, and before the quality/commit path; the gate compares changed files to declared technical-design/development-plan scope and blocks undeclared files, sensitive paths, dependency manifests, and broad formatting noise.
+- Added `validate-red` plus red-test-validator enforcement for `run-test --stage red`, `record-test --stage red`, and `standalone-test --stage red`; failed red runs now must fail for the intended reason, not import/syntax/dependency/path/environment errors or ambiguous snapshot drift.
+- Intake now has a harness-enforced `requirements-reviewer` gate: `set-phase planning` requires non-empty Goal/Acceptance Criteria plus a current source-fingerprinted pass that checks observability, failure conditions, boundaries, non-goals, and test mapping.
 
 ## 0.5.0 - 2026-07-07
 
@@ -91,3 +102,6 @@ Composability release: the monolithic loop keeps its harness-enforced evidence c
 
 - Added `record-commit` to bind commit-only completion to the current HEAD and workspace fingerprint.
 - Added self-test coverage for source type enforcement, early completion modes, local simulation restrictions, and stricter cloud check states.
+
+
+

@@ -1,6 +1,6 @@
 ---
 name: dev-clarify
-description: Turn a rough idea or vague request into a concrete spec with a non-empty Goal and Acceptance Criteria, by interviewing the user one focused round at a time and recording the Q&A. Produces a spec file any downstream skill can consume. Use when the user has an idea but no clear goal/acceptance criteria, when a request is ambiguous, or as the first step before planning or coding. Do NOT use when a clear spec already exists (go straight to planning/implementation), or when a full codex-dev-loop is already running (its own intake phase handles clarification).
+description: Turn a rough idea or vague request into a concrete, test-mappable spec with a non-empty Goal and Acceptance Criteria, by interviewing the user one focused round at a time and recording the Q&A. Produces a spec file any downstream skill can consume. Use when the user has an idea but no clear goal/acceptance criteria, when a request is ambiguous, or as the first step before planning or coding. Do NOT use when a clear spec already exists (go straight to planning/implementation), or when a full codex-dev-loop is already running (its own intake phase handles clarification).
 ---
 
 # dev-clarify — 需求澄清（可组合子 skill）

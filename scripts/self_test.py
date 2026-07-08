@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Self-test for codex-dev-loop artifact validation and harness gates."""
 
 from __future__ import annotations
@@ -85,6 +85,59 @@ Merge Recommendation:
 - pass.
 """
 
+MERGE_INTEGRATOR_REVIEW_BODY = """Decision: pass
+
+Merged Units:
+- dev-001.
+
+Diff Interaction:
+- No cross-unit interaction conflicts.
+
+Duplicate Logic:
+- None.
+
+Shared Interface Assumptions:
+- Shared interfaces are consistent.
+
+Test Interaction:
+- No order dependency.
+
+Hidden Conflict Risks:
+- No route, config, export, type, or schema conflicts.
+
+Integration Test Recommendation:
+- Existing unit re-verification is enough for this fixture.
+
+Required Actions:
+- none.
+"""
+
+DOCS_IMPACT_REVIEW_BODY = """# Docs Impact
+
+Decision: no-docs-needed
+
+## Required Doc Changes
+
+- none.
+
+## Reason
+
+- This fixture does not change README, docs, API reference, changelog, examples, configuration docs, migration notes, or user-facing copy.
+"""
+
+DOCS_NEEDED_REVIEW_BODY = """# Docs Impact
+
+Decision: docs-needed
+
+## Required Doc Changes
+
+- Update README.
+
+## Reason
+
+- The behavior changed and the user-facing docs have not been updated yet.
+"""
+
 RISK_REVIEW_BODY = """Decision: pass
 
 Architecture Risk:
@@ -103,6 +156,30 @@ External Service Or Credential Risk:
 - GitHub only.
 
 Required Actions:
+- none.
+"""
+
+REQUIREMENTS_REVIEW_BODY = """Decision: pass
+
+Requirement Quality Matrix:
+- dev-001: observable, falsifiable, bounded, non-goals clear, test mapped.
+
+Observability:
+- UI/API/log/test assertion evidence is named.
+
+Failure Conditions:
+- Fails when the observable result is absent.
+
+Boundaries:
+- Inputs, outputs, exceptions, permissions, and compatibility are clear.
+
+Non-Goals:
+- Out of scope behavior is explicit.
+
+Test Mapping:
+- dev-001 maps to at least one test assertion.
+
+Blocking Questions:
 - none.
 """
 
@@ -136,6 +213,10 @@ def plan_fingerprint(root: Path) -> str:
     return hash_files(root, CORE_ARTIFACTS)
 
 
+def source_fingerprint(root: Path) -> str:
+    return hash_files(root, ["source.md"])
+
+
 def workspace_files(workspace: Path) -> list[Path]:
     completed = run(["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"], workspace)
     if completed.returncode == 0:
@@ -163,6 +244,10 @@ def pass_command() -> str:
 
 def fail_command() -> str:
     return quoted_python("import sys; sys.exit(1)")
+
+
+def import_error_command() -> str:
+    return quoted_python("import definitely_missing_codex_dev_loop_module")
 
 
 def write_source(tmp: Path) -> Path:
@@ -222,6 +307,7 @@ def init_loop(
     if result.returncode != 0:
         print(result.stdout)
         raise SystemExit("Expected harness init to pass.")
+    record_requirements_review(harness, workspace, root, tmp)
     to_planning = run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "planning"])
     if to_planning.returncode != 0:
         print(to_planning.stdout)
@@ -257,9 +343,13 @@ def run_bundled_test_gate(unit: str, command: str, cwd: Path) -> Path:
 
 
 def review_text(role: str, agent_id: str, root: Path, workspace: Path, body: str) -> str:
-    lines = [f"Agent ID: {agent_id}", f"Plan Fingerprint: {plan_fingerprint(root)}"]
-    if role != "plan-reviewer":
-        lines.append(f"Workspace Fingerprint: {workspace_fingerprint(workspace)}")
+    lines = [f"Agent ID: {agent_id}"]
+    if role == "requirements-reviewer":
+        lines.append(f"Source Fingerprint: {source_fingerprint(root)}")
+    else:
+        lines.append(f"Plan Fingerprint: {plan_fingerprint(root)}")
+        if role != "plan-reviewer":
+            lines.append(f"Workspace Fingerprint: {workspace_fingerprint(workspace)}")
     return "\n".join(lines) + "\n\n" + body
 
 
@@ -267,6 +357,32 @@ def write_review(tmp: Path, name: str, role: str, agent_id: str, root: Path, wor
     report = tmp / name
     report.write_text(review_text(role, agent_id, root, workspace, body), encoding="utf-8")
     return report
+
+
+def record_requirements_review(harness: Path, workspace: Path, root: Path, tmp: Path, env: dict[str, str] | None = None) -> None:
+    agent_id = "019f-requirements-reviewer"
+    report = write_review(tmp, "requirements-review.md", "requirements-reviewer", agent_id, root, workspace, REQUIREMENTS_REVIEW_BODY)
+    result = run(
+        [
+            sys.executable,
+            str(harness),
+            "--workspace",
+            str(workspace),
+            "--root",
+            str(root),
+            "record-review",
+            "--role",
+            "requirements-reviewer",
+            "--agent-id",
+            agent_id,
+            "--report",
+            str(report),
+        ],
+        env=env,
+    )
+    if result.returncode != 0:
+        print(result.stdout)
+        raise SystemExit("Expected passing requirements review to record.")
 
 
 def record_plan_review(harness: Path, workspace: Path, root: Path, tmp: Path) -> None:
@@ -333,6 +449,10 @@ def record_review(harness: Path, workspace: Path, root: Path, tmp: Path, role: s
             str(report),
         ]
     )
+
+
+def record_docs_impact(harness: Path, workspace: Path, root: Path, tmp: Path) -> subprocess.CompletedProcess:
+    return record_review(harness, workspace, root, tmp, "docs-impact-reviewer", DOCS_IMPACT_REVIEW_BODY)
 
 
 def run_quality(
@@ -451,10 +571,23 @@ def main() -> int:
             print(json.dumps(data, indent=2, ensure_ascii=False))
             print("Expected default first-run config values.")
             return 1
-        if data.get("schema_version") != 2 or data.get("default_scale") != "standard" or data.get("spec_dir") != "specs":
+        expected_budget = {
+            "max_units": 8,
+            "max_files_changed": 20,
+            "max_test_retries_per_unit": 3,
+            "max_review_iterations": 3,
+            "max_quality_fix_rounds": 2,
+            "max_diff_lines": 1200,
+        }
+        if data.get("schema_version") != 3 or data.get("default_scale") != "standard" or data.get("spec_dir") != "specs":
             print(json.dumps(data, indent=2, ensure_ascii=False))
-            print("Expected schema v2 defaults from the configuration wizard.")
+            print("Expected schema v3 defaults from the configuration wizard.")
             return 1
+        for key, value in expected_budget.items():
+            if data.get(key) != value:
+                print(json.dumps(data, indent=2, ensure_ascii=False))
+                print(f"Expected budget default {key}={value} from the configuration wizard.")
+                return 1
 
     with tempfile.TemporaryDirectory(prefix="codex-dev-loop-self-test-") as raw_tmp:
         tmp = Path(raw_tmp)
@@ -720,9 +853,15 @@ def main() -> int:
             return 1
         (root / "source.md").write_text(SOURCE, encoding="utf-8")
         clarified = run([*base, "set-phase", "planning"])
+        if clarified.returncode == 0:
+            print(clarified.stdout)
+            print("Expected planning to stay blocked until requirements-reviewer passes.")
+            return 1
+        record_requirements_review(harness, workspace, root, tmp)
+        clarified = run([*base, "set-phase", "planning"])
         if clarified.returncode != 0:
             print(clarified.stdout)
-            print("Expected planning to open once the clarified source has Goal and Acceptance Criteria.")
+            print("Expected planning to open once requirements-reviewer passes for the clarified source.")
             return 1
         reinit = run([*base, "init", "--draft"])
         if reinit.returncode == 0:
@@ -770,10 +909,37 @@ def main() -> int:
             print(still_no_green.stdout)
             print("Expected an unexpectedly-passing red run to not unlock the green stage.")
             return 1
+        invalid_red = run_test(harness, workspace, root, "dev-001", import_error_command(), stage="red")
+        if invalid_red.returncode == 0:
+            print(invalid_red.stdout)
+            print("Expected an import-error red run to be rejected as the wrong failure reason.")
+            return 1
+        green_after_invalid_red = run_test(harness, workspace, root, "dev-001", pass_command())
+        if green_after_invalid_red.returncode == 0:
+            print(green_after_invalid_red.stdout)
+            print("Expected an invalid red run to not unlock the green stage.")
+            return 1
         red = run_test(harness, workspace, root, "dev-001", fail_command(), stage="red")
         if red.returncode != 0:
             print(red.stdout)
             print("Expected a failing red-stage run to record TDD evidence.")
+            return 1
+        (workspace / "unplanned.txt").write_text("scope drift\n", encoding="utf-8")
+        drift_green = run_test(harness, workspace, root, "dev-001", pass_command())
+        if drift_green.returncode == 0:
+            print(drift_green.stdout)
+            print("Expected unit green to be rejected when the diff drifts outside declared scope.")
+            return 1
+        drift_state = json.loads((root / "loop-state.json").read_text(encoding="utf-8"))
+        if not drift_state.get("blockers"):
+            print(json.dumps(drift_state, indent=2))
+            print("Expected scope drift to add a loop blocker.")
+            return 1
+        (workspace / "unplanned.txt").unlink()
+        resolved_scope = run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "resolve-blocker", "--reason", "Removed the unplanned scope drift file."])
+        if resolved_scope.returncode != 0:
+            print(resolved_scope.stdout)
+            print("Expected resolving scope drift blocker to pass.")
             return 1
         (workspace / "app.txt").write_text("tdd feature\n", encoding="utf-8")
         green = run_test(harness, workspace, root, "dev-001", pass_command())
@@ -833,6 +999,16 @@ def main() -> int:
         if stale_worktree_green.returncode == 0:
             print(stale_worktree_green.stdout)
             print("Expected interim worktree evidence to not satisfy the final gate after the main tree diverged.")
+            return 1
+        missing_integrator = run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "verify-units"])
+        if missing_integrator.returncode == 0:
+            print(missing_integrator.stdout)
+            print("Expected verify-units to require merge-integrator after merging worktree evidence.")
+            return 1
+        merge_review = record_review(harness, workspace, root, tmp, "merge-integrator", MERGE_INTEGRATOR_REVIEW_BODY)
+        if merge_review.returncode != 0:
+            print(merge_review.stdout)
+            print("Expected merge-integrator review to be recorded after merging worktree branches.")
             return 1
         verified = run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "verify-units"])
         if verified.returncode != 0:
@@ -908,10 +1084,30 @@ def main() -> int:
         if impl.returncode != 0:
             print(impl.stdout)
             return 1
+        missing_docs_impact = run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "quality_gate"])
+        if missing_docs_impact.returncode == 0:
+            print(missing_docs_impact.stdout)
+            print("Expected quality_gate to require docs-impact-reviewer after implementation review.")
+            return 1
+        docs_needed = record_review(harness, workspace, root, tmp, "docs-impact-reviewer", DOCS_NEEDED_REVIEW_BODY)
+        if docs_needed.returncode == 0:
+            print(docs_needed.stdout)
+            print("Expected docs-needed to be recorded but not treated as a passing docs-impact decision.")
+            return 1
+        docs_needed_blocked = run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "quality_gate"])
+        if docs_needed_blocked.returncode == 0:
+            print(docs_needed_blocked.stdout)
+            print("Expected docs-needed decision to keep quality_gate blocked until docs are updated and re-reviewed.")
+            return 1
+        docs = record_docs_impact(harness, workspace, root, tmp)
+        if docs.returncode != 0:
+            print(docs.stdout)
+            print("Expected docs-impact-reviewer no-docs-needed decision to record.")
+            return 1
         skip_clean = run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "quality_gate"])
         if skip_clean.returncode != 0:
             print(skip_clean.stdout)
-            print("Expected small scale to skip risk_review for a non-sensitive change set.")
+            print("Expected small scale to skip risk_review for a non-sensitive change set after docs-impact-reviewer passes.")
             return 1
 
     with tempfile.TemporaryDirectory(prefix="codex-dev-loop-scale-guard-test-") as raw_tmp:
@@ -924,41 +1120,15 @@ def main() -> int:
         (workspace / "app.txt").write_text("guarded feature\n", encoding="utf-8")
         (workspace / "package.json").write_text("{}\n", encoding="utf-8")
         run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "implementation"])
-        run_test(harness, workspace, root, "dev-001", pass_command())
-        must_record_spec_merge(harness, workspace, root)
-        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "implementation_review"])
-        impl = record_review(harness, workspace, root, tmp, "implementation-reviewer", IMPLEMENTATION_REVIEW_BODY)
-        if impl.returncode != 0:
-            print(impl.stdout)
+        sensitive_green = run_test(harness, workspace, root, "dev-001", pass_command())
+        if sensitive_green.returncode == 0:
+            print(sensitive_green.stdout)
+            print("Expected scope-check to refuse sensitive dependency manifest drift at unit green.")
             return 1
-        guarded = run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "quality_gate"])
-        if guarded.returncode == 0:
-            print(guarded.stdout)
-            print("Expected the sensitive-path guard to refuse the small-scale risk_review skip.")
-            return 1
-        raised = run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-scale", "standard"])
-        if raised.returncode != 0:
-            print(raised.stdout)
-            print("Expected raising scale to be allowed at any phase.")
-            return 1
-        lowered = run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-scale", "small"])
-        if lowered.returncode == 0:
-            print(lowered.stdout)
-            print("Expected lowering scale after planning to be refused.")
-            return 1
-        to_risk = run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "risk_review"])
-        if to_risk.returncode != 0:
-            print(to_risk.stdout)
-            print("Expected risk_review to open at standard scale with full artifacts.")
-            return 1
-        risk = record_review(harness, workspace, root, tmp, "risk-reviewer", RISK_REVIEW_BODY)
-        if risk.returncode != 0:
-            print(risk.stdout)
-            return 1
-        risk_path = run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "quality_gate"])
-        if risk_path.returncode != 0:
-            print(risk_path.stdout)
-            print("Expected quality_gate to open after a real risk review at standard scale.")
+        sensitive_state = json.loads((root / "loop-state.json").read_text(encoding="utf-8"))
+        if not sensitive_state.get("blockers"):
+            print(json.dumps(sensitive_state, indent=2))
+            print("Expected sensitive scope drift to add a blocker.")
             return 1
 
     with tempfile.TemporaryDirectory(prefix="codex-dev-loop-config-migration-test-") as raw_tmp:
@@ -980,9 +1150,108 @@ def main() -> int:
         workspace, root = init_loop(harness, tmp, config_path=v1_config)
         state_data = json.loads((root / "loop-state.json").read_text(encoding="utf-8"))
         migrated = state_data.get("config", {})
-        if migrated.get("schema_version") != 2 or migrated.get("default_scale") != "standard" or migrated.get("spec_dir") != "specs":
+        if migrated.get("schema_version") != 3 or migrated.get("default_scale") != "standard" or migrated.get("spec_dir") != "specs":
             print(json.dumps(migrated, indent=2))
-            print("Expected schema v1 config to migrate to v2 defaults at init.")
+            print("Expected schema v1 config to migrate to v3 defaults at init.")
+            return 1
+        if migrated.get("max_test_retries_per_unit") != 3 or migrated.get("max_units") != 8 or migrated.get("max_diff_lines") != 1200:
+            print(json.dumps(migrated, indent=2))
+            print("Expected schema v1 config to migrate to budget defaults.")
+            return 1
+
+    with tempfile.TemporaryDirectory(prefix="codex-dev-loop-budget-units-test-") as raw_tmp:
+        tmp = Path(raw_tmp)
+        config_path = tmp / "budget-units.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "automation_level": "pr_without_merge",
+                    "source_types": ["markdown", "notion"],
+                    "quality_profile": "standard",
+                    "risk_mode": "stop_and_ask",
+                    "max_units": 1,
+                }
+            ),
+            encoding="utf-8",
+        )
+        workspace, root = init_loop(harness, tmp, config_path=config_path)
+        append_dev_002(root)
+        too_many_units = run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "plan_review"])
+        if too_many_units.returncode == 0:
+            print(too_many_units.stdout)
+            print("Expected max_units budget to block a plan with too many units.")
+            return 1
+        state_data = json.loads((root / "loop-state.json").read_text(encoding="utf-8"))
+        if not any("max_units" in item for item in state_data.get("blockers", [])):
+            print(json.dumps(state_data.get("blockers", []), indent=2))
+            print("Expected max_units budget blocker to be recorded.")
+            return 1
+
+    with tempfile.TemporaryDirectory(prefix="codex-dev-loop-budget-review-test-") as raw_tmp:
+        tmp = Path(raw_tmp)
+        config_path = tmp / "budget-review.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "automation_level": "pr_without_merge",
+                    "source_types": ["markdown", "notion"],
+                    "quality_profile": "standard",
+                    "risk_mode": "stop_and_ask",
+                    "max_review_iterations": 1,
+                }
+            ),
+            encoding="utf-8",
+        )
+        workspace, root = init_loop(harness, tmp, config_path=config_path)
+        first_plan_review = record_review(harness, workspace, root, tmp, "plan-reviewer", PLAN_REVIEW_BODY)
+        if first_plan_review.returncode != 0:
+            print(first_plan_review.stdout)
+            print("Expected first plan-reviewer iteration to fit the budget.")
+            return 1
+        second_plan_review = record_review(harness, workspace, root, tmp, "plan-reviewer", PLAN_REVIEW_BODY)
+        if second_plan_review.returncode == 0:
+            print(second_plan_review.stdout)
+            print("Expected max_review_iterations budget to block another plan-reviewer iteration.")
+            return 1
+        state_data = json.loads((root / "loop-state.json").read_text(encoding="utf-8"))
+        if not any("max_review_iterations" in item for item in state_data.get("blockers", [])):
+            print(json.dumps(state_data.get("blockers", []), indent=2))
+            print("Expected max_review_iterations budget blocker to be recorded.")
+            return 1
+
+    with tempfile.TemporaryDirectory(prefix="codex-dev-loop-budget-diff-test-") as raw_tmp:
+        tmp = Path(raw_tmp)
+        config_path = tmp / "budget-diff.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "automation_level": "pr_without_merge",
+                    "source_types": ["markdown", "notion"],
+                    "quality_profile": "standard",
+                    "risk_mode": "stop_and_ask",
+                    "max_files_changed": 1,
+                }
+            ),
+            encoding="utf-8",
+        )
+        workspace, root = init_loop(harness, tmp, config_path=config_path)
+        (root / "technical-design.md").write_text(ARTIFACTS["technical-design.md"].replace("- app.txt", "- app.txt\n- second.txt"), encoding="utf-8")
+        (root / "development-plan.md").write_text(ARTIFACTS["development-plan.md"].replace("- Scope: app.txt", "- Scope: app.txt, second.txt"), encoding="utf-8")
+        record_plan_review(harness, workspace, root, tmp)
+        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "branch"])
+        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "record-branch", "--branch", "codex/test"])
+        (workspace / "app.txt").write_text("budget feature\n", encoding="utf-8")
+        (workspace / "second.txt").write_text("budget second file\n", encoding="utf-8")
+        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "implementation"])
+        over_file_budget = run_test(harness, workspace, root, "dev-001", pass_command())
+        if over_file_budget.returncode == 0:
+            print(over_file_budget.stdout)
+            print("Expected max_files_changed budget to block a green run with too many changed files.")
+            return 1
+        state_data = json.loads((root / "loop-state.json").read_text(encoding="utf-8"))
+        if not any("max_files_changed" in item for item in state_data.get("blockers", [])):
+            print(json.dumps(state_data.get("blockers", []), indent=2))
+            print("Expected max_files_changed budget blocker to be recorded.")
             return 1
 
     with tempfile.TemporaryDirectory(prefix="codex-dev-loop-gate-resolution-test-") as raw_tmp:
@@ -1006,15 +1275,17 @@ def main() -> int:
         root = workspace / ".codex" / "dev-loop"
         source = write_source(tmp)
         base = [sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root)]
-        for step in (
-            [*base, "init", "--source", str(source)],
-            [*base, "set-phase", "planning"],
-        ):
-            result = run(step, env=env)
-            if result.returncode != 0:
-                print(result.stdout)
-                print("Expected gate-resolution loop setup to pass.")
-                return 1
+        result = run([*base, "init", "--source", str(source)], env=env)
+        if result.returncode != 0:
+            print(result.stdout)
+            print("Expected gate-resolution loop setup to pass.")
+            return 1
+        record_requirements_review(harness, workspace, root, tmp, env=env)
+        result = run([*base, "set-phase", "planning"], env=env)
+        if result.returncode != 0:
+            print(result.stdout)
+            print("Expected gate-resolution loop setup to pass.")
+            return 1
         write_artifacts(root)
         for step in ([*base, "set-phase", "plan_review"],):
             result = run(step, env=env)
@@ -1088,6 +1359,11 @@ def main() -> int:
         if risk.returncode != 0:
             print(risk.stdout)
             return 1
+        docs = record_docs_impact(harness, workspace, root, tmp)
+        if docs.returncode != 0:
+            print(docs.stdout)
+            print("Expected docs-impact-reviewer no-docs-needed decision to record before quality gate.")
+            return 1
         run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "quality_gate"])
         failing_quality = run_failing_quality(harness, workspace, root, tmp / "failing-quality")
         if failing_quality.returncode == 0:
@@ -1095,6 +1371,65 @@ def main() -> int:
             print("Expected failing ai-code-quality-gate process to block.")
             return 1
 
+    with tempfile.TemporaryDirectory(prefix="codex-dev-loop-budget-quality-test-") as raw_tmp:
+        tmp = Path(raw_tmp)
+        config_path = tmp / "budget-quality.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "automation_level": "pr_without_merge",
+                    "source_types": ["markdown", "notion"],
+                    "quality_profile": "standard",
+                    "risk_mode": "stop_and_ask",
+                    "max_quality_fix_rounds": 1,
+                }
+            ),
+            encoding="utf-8",
+        )
+        workspace, root = init_loop(harness, tmp, config_path=config_path)
+        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "plan_review"])
+        record_plan_review(harness, workspace, root, tmp)
+        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "branch"])
+        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "record-branch", "--branch", "codex/test"])
+        (workspace / "app.txt").write_text("feature\n", encoding="utf-8")
+        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "implementation"])
+        run_test(harness, workspace, root, "dev-001", pass_command())
+        must_record_spec_merge(harness, workspace, root)
+        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "implementation_review"])
+        impl = record_review(harness, workspace, root, tmp, "implementation-reviewer", IMPLEMENTATION_REVIEW_BODY)
+        if impl.returncode != 0:
+            print(impl.stdout)
+            return 1
+        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "risk_review"])
+        risk = record_review(harness, workspace, root, tmp, "risk-reviewer", RISK_REVIEW_BODY)
+        if risk.returncode != 0:
+            print(risk.stdout)
+            return 1
+        docs = record_docs_impact(harness, workspace, root, tmp)
+        if docs.returncode != 0:
+            print(docs.stdout)
+            return 1
+        run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "quality_gate"])
+        first_quality_failure = run_failing_quality(harness, workspace, root, tmp / "first-quality-failure")
+        if first_quality_failure.returncode == 0:
+            print(first_quality_failure.stdout)
+            print("Expected first failing quality run to fail normally.")
+            return 1
+        resolved = run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "resolve-blocker", "--reason", "quality failure acknowledged for budget retry test"])
+        if resolved.returncode != 0:
+            print(resolved.stdout)
+            print("Expected quality blocker to be resolvable for retry budget test.")
+            return 1
+        over_quality_budget = run_failing_quality(harness, workspace, root, tmp / "second-quality-failure")
+        if over_quality_budget.returncode == 0:
+            print(over_quality_budget.stdout)
+            print("Expected max_quality_fix_rounds budget to block another quality run.")
+            return 1
+        state_data = json.loads((root / "loop-state.json").read_text(encoding="utf-8"))
+        if not any("max_quality_fix_rounds" in item for item in state_data.get("blockers", [])):
+            print(json.dumps(state_data.get("blockers", []), indent=2))
+            print("Expected max_quality_fix_rounds budget blocker to be recorded.")
+            return 1
     with tempfile.TemporaryDirectory(prefix="codex-dev-loop-quality-floor-test-") as raw_tmp:
         tmp = Path(raw_tmp)
         workspace, root = init_loop(harness, tmp)
@@ -1115,6 +1450,11 @@ def main() -> int:
         risk = record_review(harness, workspace, root, tmp, "risk-reviewer", RISK_REVIEW_BODY)
         if risk.returncode != 0:
             print(risk.stdout)
+            return 1
+        docs = record_docs_impact(harness, workspace, root, tmp)
+        if docs.returncode != 0:
+            print(docs.stdout)
+            print("Expected docs-impact-reviewer no-docs-needed decision to record before quality gate.")
             return 1
         run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "quality_gate"])
         reduced_quality = run_quality(harness, workspace, root, tmp / "reduced-quality", require="test", gate_names=["test"])
@@ -1156,6 +1496,11 @@ def main() -> int:
         risk = record_review(harness, workspace, root, tmp, "risk-reviewer", RISK_REVIEW_BODY)
         if risk.returncode != 0:
             print(risk.stdout)
+            return 1
+        docs = record_docs_impact(harness, workspace, root, tmp)
+        if docs.returncode != 0:
+            print(docs.stdout)
+            print("Expected docs-impact-reviewer no-docs-needed decision to record before quality gate.")
             return 1
         run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "quality_gate"])
         quality = run_quality(harness, workspace, root, tmp / "commit-only-quality")
@@ -1240,6 +1585,11 @@ def main() -> int:
             print("Expected risk review to record.")
             return 1
 
+        docs = record_docs_impact(harness, workspace, root, tmp)
+        if docs.returncode != 0:
+            print(docs.stdout)
+            print("Expected docs-impact-reviewer no-docs-needed decision to record before quality gate.")
+            return 1
         run([sys.executable, str(harness), "--workspace", str(workspace), "--root", str(root), "set-phase", "quality_gate"])
         fake_quality_script = tmp / "fake-quality-gate.py"
         fake_quality_script.write_text("print('fake')\n", encoding="utf-8")
@@ -1530,10 +1880,10 @@ def standalone_tests() -> int:
         init_git_repo(workspace)
 
         # version handshake
-        ok_version = standalone(harness, workspace, "version", "--require", "0.5.0")
+        ok_version = standalone(harness, workspace, "version", "--require", "0.5.1")
         if ok_version.returncode != 0:
             print(ok_version.stdout)
-            print("Expected the installed core to satisfy a 0.5.0 requirement.")
+            print("Expected the installed core to satisfy a 0.5.1 requirement.")
             return 1
         too_new = standalone(harness, workspace, "version", "--require", "99.0.0")
         if too_new.returncode == 0:
@@ -1570,11 +1920,89 @@ def standalone_tests() -> int:
             print("Expected check-spec to accept a filled-in spec.")
             return 1
 
+        # scope-check command: reject undeclared files and sensitive paths
+        spec.unlink()
+        standalone_loop_root = workspace / ".codex" / "dev-loop"
+        standalone_loop_root.mkdir(parents=True, exist_ok=True)
+        (standalone_loop_root / "technical-design.md").write_text(ARTIFACTS["technical-design.md"], encoding="utf-8")
+        (standalone_loop_root / "development-plan.md").write_text(ARTIFACTS["development-plan.md"], encoding="utf-8")
+        (workspace / "unplanned.txt").write_text("scope drift\n", encoding="utf-8")
+        scope_drift = standalone(
+            harness,
+            workspace,
+            "scope-check",
+            "--plan",
+            str(workspace / ".codex" / "dev-loop" / "development-plan.md"),
+            "--design",
+            str(workspace / ".codex" / "dev-loop" / "technical-design.md"),
+        )
+        if scope_drift.returncode == 0:
+            print(scope_drift.stdout)
+            print("Expected scope-check to reject an undeclared changed file.")
+            return 1
+        (workspace / "unplanned.txt").unlink()
+        (workspace / "app.txt").write_text("declared scope change\n", encoding="utf-8")
+        scope_ok = standalone(
+            harness,
+            workspace,
+            "scope-check",
+            "--plan",
+            str(workspace / ".codex" / "dev-loop" / "development-plan.md"),
+            "--design",
+            str(workspace / ".codex" / "dev-loop" / "technical-design.md"),
+        )
+        if scope_ok.returncode != 0:
+            print(scope_ok.stdout)
+            print("Expected scope-check to accept a change inside declared scope.")
+            return 1
+        (workspace / "package.json").write_text("{}\n", encoding="utf-8")
+        sensitive_scope = standalone(
+            harness,
+            workspace,
+            "scope-check",
+            "--plan",
+            str(workspace / ".codex" / "dev-loop" / "development-plan.md"),
+            "--design",
+            str(workspace / ".codex" / "dev-loop" / "technical-design.md"),
+        )
+        if sensitive_scope.returncode == 0:
+            print(sensitive_scope.stdout)
+            print("Expected scope-check to reject undeclared dependency manifest changes.")
+            return 1
+        (workspace / "package.json").unlink()
+        must(["git", "checkout", "--", "app.txt"], workspace)
+
+        # validate-red command: reject infrastructure failures, accept intended assertion failures
+        bad_red_log = workspace / "bad-red.log"
+        bad_red_log.write_text("ModuleNotFoundError: No module named 'missing_dependency'\n", encoding="utf-8")
+        invalid_red_log = standalone(harness, workspace, "validate-red", "--unit", "feat", "--log", str(bad_red_log), "--expected", "401 error message is missing")
+        if invalid_red_log.returncode == 0:
+            print(invalid_red_log.stdout)
+            print("Expected validate-red to reject import/dependency failures.")
+            return 1
+        good_red_log = workspace / "good-red.log"
+        good_red_log.write_text("AssertionError: 401 error message is missing\n", encoding="utf-8")
+        valid_red_log = standalone(harness, workspace, "validate-red", "--unit", "feat", "--log", str(good_red_log), "--expected", "401 error message is missing")
+        if valid_red_log.returncode != 0:
+            print(valid_red_log.stdout)
+            print("Expected validate-red to accept the declared assertion failure.")
+            return 1
+
         # standalone TDD: green refused without red, then red -> green
         green_first = standalone(harness, workspace, "standalone-test", "--label", "feat", "--stage", "green", "--command", pass_command())
         if green_first.returncode == 0:
             print(green_first.stdout)
             print("Expected standalone green stage to be refused before red evidence exists.")
+            return 1
+        invalid_standalone_red = standalone(harness, workspace, "standalone-test", "--label", "feat", "--stage", "red", "--command", import_error_command())
+        if invalid_standalone_red.returncode == 0:
+            print(invalid_standalone_red.stdout)
+            print("Expected standalone red import error to be rejected as the wrong failure reason.")
+            return 1
+        green_after_invalid = standalone(harness, workspace, "standalone-test", "--label", "feat", "--stage", "green", "--command", pass_command())
+        if green_after_invalid.returncode == 0:
+            print(green_after_invalid.stdout)
+            print("Expected invalid standalone red evidence to not unlock green.")
             return 1
         red = standalone(harness, workspace, "standalone-test", "--label", "feat", "--stage", "red", "--command", fail_command())
         if red.returncode != 0:
@@ -1592,9 +2020,15 @@ def standalone_tests() -> int:
             print("Expected standalone green stage to pass after red evidence exists.")
             return 1
         ledger = json.loads((workspace / ".codex" / "evidence" / "tdd" / "ledger.json").read_text(encoding="utf-8"))
-        if [item["stage"] for item in ledger["attempts"]["feat"]] != ["red", "green"]:
+        feat_attempts = ledger["attempts"]["feat"]
+        accepted_stages = [
+            item["stage"]
+            for item in feat_attempts
+            if item["stage"] != "red" or item.get("red_validation", {}).get("status") == "pass"
+        ]
+        if accepted_stages != ["red", "green"] or feat_attempts[0].get("red_validation", {}).get("status") != "invalid":
             print(json.dumps(ledger, indent=2))
-            print("Expected the tdd ledger to record red then green for the label.")
+            print("Expected the tdd ledger to keep invalid red attempts but only let validator-passed red unlock green.")
             return 1
 
         # standalone review bound to a target fingerprint
@@ -1734,6 +2168,7 @@ def standalone_upgrade_path_test() -> int:
         if hp("init", "--source", str(source)).returncode != 0:
             print("Expected loop init to succeed on the escalation path.")
             return 1
+        record_requirements_review(harness, workspace, root, tmp)
         if hp("set-phase", "planning").returncode != 0:
             print("Expected intake -> planning to succeed.")
             return 1
@@ -1863,3 +2298,10 @@ def standalone_ship_and_spec_tests() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+
+
+
+
+

@@ -1,7 +1,7 @@
-# Codex Dev Loop · 从需求到 PR 的自动开发 loop
+﻿# Codex Dev Loop · 从需求到 PR 的自动开发 loop
 
 ![Skill](https://img.shields.io/badge/Skill-Codex%20%7C%20Claude%20Code-111111?style=flat-square)
-![Version](https://img.shields.io/badge/Version-v0.5.0-blue?style=flat-square)
+![Version](https://img.shields.io/badge/Version-v0.5.1-blue?style=flat-square)
 ![Quality Gate](https://img.shields.io/badge/Quality%20Gate-required-0A7CFF?style=flat-square)
 ![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-supported-2088FF?style=flat-square)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
@@ -433,7 +433,7 @@ README 的表达结构参考了 [op7418/guizang-ppt-skill](https://github.com/op
 
 `codex-dev-loop` is an autonomous development loop for AI coding agents (Codex and Claude Code).
 
-Give it a Notion page, a local Markdown spec, or just a rough idea. It first clarifies the requirement with you (Q&A recorded in a clarification log), agrees on a task scale (`small` / `standard` / `large` gate weight), then turns the input into a technical design, test plan, risk analysis, spec delta, and development plan. Subagents review those planning artifacts before implementation starts. Every unit is built test-first (red/green TDD gates; independent units can run in parallel git worktrees). After coding, the spec delta is merged into the repository's living `specs/` baseline on the same branch, and the loop runs tests, local quality gates, cloud checks, and PR-level review before the change is allowed to move forward.
+Give it a Notion page, a local Markdown spec, or just a rough idea. It first clarifies the requirement with you (Q&A recorded in a clarification log), agrees on a task scale (`small` / `standard` / `large` gate weight), then turns the input into a technical design, test plan, risk analysis, spec delta, and development plan. Subagents review those planning artifacts before implementation starts. Every unit is built test-first (red/green TDD gates; red failures are validated for the right reason; independent units can run in parallel git worktrees). Parallel worktree merges require a `merge-integrator` pass before final `verify-units`. After coding, the spec delta is merged into the repository's living `specs/` baseline on the same branch, and the loop runs tests, local quality gates, cloud checks, and PR-level review before the change is allowed to move forward.
 
 The goal is straightforward: let the agent move development forward while clarification, TDD, reviews, quality gates, spec consolidation, and PR checks keep risk under control.
 
@@ -543,13 +543,15 @@ Bad fit:
 
 | Stage | Action | Failure Behavior |
 |---|---|---|
-| Intake & clarification | Read Markdown / Notion / draft input; interview the user until goal and acceptance criteria are real | Planning refused while Goal or Acceptance Criteria are empty |
+| Intake & clarification | Read Markdown / Notion / draft input; interview the user, then run requirements-reviewer | Planning refused while Goal/Acceptance Criteria are empty or any requirement lacks observability, failure conditions, boundaries, non-goals, or test mapping |
 | Scale agreement | Confirm `small` / `standard` / `large` gate weight with the user | `small` force-escalates when sensitive paths change |
 | Planning | Produce design, file scope, test plan, risk analysis, spec delta, and development plan | Stop on architecture risk |
-| Subagent review | Cross-check plan, implementation approach, and risk | Revise and review again |
-| TDD implementation | Record failing red evidence, then implement to green; independent units in parallel worktrees | Green runs are refused without red evidence |
-| Test gate | Run tests for each unit; failure limit follows first-run config | Stop after the configured limit |
+| Subagent review | Cross-check requirements, plan, implementation approach, and risk | Revise and review again |
+| TDD implementation | Record failing red evidence, then implement to green; independent units in parallel worktrees | Green runs are refused without red evidence; worktree merges require `merge-integrator` before `verify-units` |
+| Test gate | Run tests for each unit; retry budget follows first-run config | Stop after `max_test_retries_per_unit` |
+| Budget/time-box | Track planned units, changed files, diff lines, review iterations, and quality fix rounds | Stop and report when a configured budget is reached |
 | Spec consolidation | Merge the spec delta into `specs/` and validate mechanically | Reviews blocked until baseline matches the delta |
+| Docs impact review | Check README, docs/, API reference, changelog, examples, env/config docs, migration notes, and user-facing copy | Quality gate blocked until `docs-impact-reviewer` returns `no-docs-needed` |
 | Local quality gate | Run `ai-code-quality-gate` (or the bundled fallback); strictness follows first-run config | Stop on quality failure |
 | PR stage | Create branch, commit, push, and open PR | Stop if credentials are missing |
 | Cloud checks | Verify GitHub Actions and PR-level AI review | Stop if checks fail or are missing |
@@ -571,11 +573,13 @@ Bad fit:
 6. The main agent revises the plan.
 7. Subagents review again until the plan passes or a blocker is found.
 8. Units are implemented test-first: failing red evidence, then green. Independent units can be built by unit-implementer Subagents in isolated git worktrees, with all evidence recorded serially by the orchestrator.
-9. The spec delta is merged into the repository `specs/` baseline, validated by `record-spec-merge`, and `verify-units` re-runs every unit against the final tree.
-10. The local `ai-code-quality-gate` (or the bundled fallback) runs lint, typecheck, tests, Semgrep, CodeQL, Sonar, Qodana, or the checks available in the target repository.
-11. The agent creates a new branch and commits; in `commit_only` mode, it records the commit and completes.
-12. When automation scope allows it, the agent pushes, opens a PR (spec baseline updates reviewed in the same PR), and waits for GitHub Actions plus PR-level AI review.
-13. The loop writes execution records under `.codex/dev-loop/` and archives them to `.codex/dev-loop-archive/` after completion.
+9. The spec delta is merged into the repository `specs/` baseline and validated by `record-spec-merge`.
+10. If worktree evidence exists, `merge-integrator` reviews the merged tree for cross-unit interaction risk before `verify-units` re-runs every unit against the final tree.
+11. `docs-impact-reviewer` decides whether README, docs, API reference, changelog, examples, env/config docs, migration notes, or user-facing copy must be updated; `docs-needed` blocks until fixed and re-reviewed.
+12. The local `ai-code-quality-gate` (or the bundled fallback) runs lint, typecheck, tests, Semgrep, CodeQL, Sonar, Qodana, or the checks available in the target repository.
+13. The agent creates a new branch and commits; in `commit_only` mode, it records the commit and completes.
+14. When automation scope allows it, the agent pushes, opens a PR (spec baseline updates reviewed in the same PR), and waits for GitHub Actions plus PR-level AI review.
+15. The loop writes execution records under `.codex/dev-loop/` and archives them to `.codex/dev-loop-archive/` after completion.
 
 ### Source Spec
 
@@ -646,7 +650,7 @@ The config is written to:
 ~/.codex/config/codex-dev-loop.json
 ```
 
-The harness enforces these preferences: disabled source types are rejected during `init --source-type ...`, and `planning_only` / `commit_only` stop at their configured completion points.
+The harness enforces these preferences: disabled source types are rejected during `init --source-type ...`, and `planning_only` / `commit_only` stop at their configured completion points. Advanced JSON keys also set budget/time-box limits: `max_units` (8), `max_files_changed` (20), `max_test_retries_per_unit` (3), `max_review_iterations` (3), `max_quality_fix_rounds` (2), and `max_diff_lines` (1200).
 
 The wizard ends with a note like:
 
@@ -699,10 +703,14 @@ Do not edit product code yet.
 
 The loop does not rely on a Git `pre-commit` hook. Its hooks are harness-enforced stage gates:
 
-- Clarification gate: planning is refused while `source.md` lacks a non-empty Goal and Acceptance Criteria; stay in intake and ask.
+- Clarification gate: planning is refused while `source.md` lacks a non-empty Goal and Acceptance Criteria or a current `requirements-reviewer` pass; stay in intake and ask.
+- Red-test gate: `- TDD: red` units need a failing red run that passes red-test-validator; infrastructure failures and ambiguous snapshot drift do not unlock green.
+- Scope-drift gate: every unit green, worktree green record, pre-spec-merge, and pre-quality/commit path runs scope-check against `technical-design.md` / `development-plan.md`; undeclared files, sensitive paths, dependency manifests, or broad formatting noise block progress.
 - Planning review gate (now including the spec delta).
 - TDD gate: `- TDD: red` units need recorded failing red evidence before green counts; `regression-only` waivers must be in the plan and approved by plan review.
-- Unit test gate; worktree evidence is interim, and `verify-units` must re-verify the merged tree.
+- Unit test gate; worktree evidence is interim, `merge-integrator` must pass on the merged tree, and `verify-units` must re-verify it.
+- Budget/time-box gate: `max_units`, `max_files_changed`, `max_diff_lines`, `max_review_iterations`, `max_quality_fix_rounds`, and `max_test_retries_per_unit` stop the loop with a blocker when reached.
+- Docs impact gate: quality is refused until `docs-impact-reviewer` returns `no-docs-needed`; `docs-needed` means update the named docs and rerun the review.
 - Spec gate: `record-spec-merge` mechanically checks the baseline against the delta (ADDED/MODIFIED titles present, REMOVED titles gone) before implementation review opens.
 - Scale guard: the small-scale `risk_review` skip is refused when the change set touches dependency manifests, migrations, SQL, CI/CD, Docker, keys, or auth/security paths.
 - Local quality gate through `ai-code-quality-gate` (bundled fallback when absent); configured profile gates always remain required, and `run-quality --require` can only add gates.
@@ -771,3 +779,7 @@ The WeChat Pay QR image in `assets/wechat-pay-qr.jpg` is a maintainer-provided s
 ### License
 
 Code and documentation are released under the MIT License, except where noted for sponsorship assets.
+
+
+
+

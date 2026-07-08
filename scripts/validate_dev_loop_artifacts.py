@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Validate Codex dev loop artifact presence and review decisions."""
 
 from __future__ import annotations
@@ -111,8 +111,17 @@ def main() -> int:
                 import json
 
                 state = json.loads(state_path.read_text(encoding="utf-8"))
-                for role in ["plan-reviewer", "implementation-reviewer", "risk-reviewer"]:
-                    if state.get("reviews", {}).get(role, {}).get("decision") != "pass":
+                worktree_evidence = any(
+                    record.get("worktree")
+                    for attempts in state.get("test_attempts", {}).values()
+                    for record in attempts
+                )
+                review_roles = ["requirements-reviewer", "plan-reviewer", "implementation-reviewer", "docs-impact-reviewer", "risk-reviewer"]
+                if worktree_evidence:
+                    review_roles.insert(2, "merge-integrator")
+                for role in review_roles:
+                    expected_decision = "no-docs-needed" if role == "docs-impact-reviewer" else "pass"
+                    if state.get("reviews", {}).get(role, {}).get("decision") != expected_decision:
                         findings.append(f"Missing passing review in state: {role}")
                 if state.get("quality_gate", {}).get("status") != "passed":
                     findings.append("Missing passing quality gate in state.")
@@ -135,3 +144,6 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+

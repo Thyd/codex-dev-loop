@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """State helper for the Codex dev loop.
 
 This does not replace Codex as the harness. It provides a small enforceable
@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import fnmatch
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -33,7 +35,10 @@ PHASES = [
     "complete",
 ]
 
-REVIEW_ROLES = {"plan-reviewer", "implementation-reviewer", "risk-reviewer"}
+REQUIREMENTS_REVIEWER_ROLE = "requirements-reviewer"
+MERGE_INTEGRATOR_ROLE = "merge-integrator"
+DOCS_IMPACT_REVIEWER_ROLE = "docs-impact-reviewer"
+REVIEW_ROLES = {REQUIREMENTS_REVIEWER_ROLE, "plan-reviewer", MERGE_INTEGRATOR_ROLE, "implementation-reviewer", DOCS_IMPACT_REVIEWER_ROLE, "risk-reviewer"}
 PROTECTED_BRANCHES = {"main", "master", "develop"}
 CORE_ARTIFACTS = ["source.md", "technical-design.md", "test-plan.md", "risk-analysis.md", "development-plan.md", "spec-delta.md", "decision-log.md"]
 FINAL_ARTIFACTS = ["final-report.md", "pr-body.md", "quality-gate-summary.md"]
@@ -60,6 +65,23 @@ AI_REVIEW_CHECK_ALIASES = ["qodo", "coderabbit", "pr-agent", "ai-review"]
 # hyphen-delimited token in the canonical check name. Loop-owned checks such
 # as ai-quality-gate and subagent-alignment intentionally have no aliases and
 # still require an exact canonical match.
+RED_FAILURE_INFRA_PATTERNS = [
+    ("import/dependency error", ["modulenotfounderror", "importerror", "cannot find module", "err_module_not_found", "cannot find package"]),
+    ("syntax error", ["syntaxerror", "indentationerror", "taberror"]),
+    ("test collection error", ["error collecting", "errors during collection", "failed to import test module", "import file mismatch"]),
+    ("missing fixture", ["fixture", "not found"]),
+    ("environment or path error", ["could not start test command", "command not found", "is not recognized as an internal or external command", "no such file or directory", "filenotfounderror", "enoent", "can't open file"]),
+    ("tooling/config error", ["failed to load config", "npm err!", "error: cannot find", "pytest: error"]),
+]
+RED_FAILURE_SNAPSHOT_PATTERNS = ["snapshot", "snapshots:", "snapshot summary", "received value does not match stored snapshot"]
+EXPECTED_FAILURE_STOP_WORDS = {
+    "the", "and", "for", "with", "that", "this", "when", "then", "into", "from", "missing", "fails", "fail", "error",
+}
+SCOPE_FORMATTING_FILE_THRESHOLD = 25
+SCOPE_FORMATTING_CHURN_THRESHOLD = 3000
+SCOPE_ALWAYS_IGNORED_PREFIXES = (".codex/",)
+
+
 SCANNER_CHECK_ALIASES = {
     "sonar": ["sonar", "sonarcloud", "sonarqube"],
     "qodana": ["qodana"],
@@ -96,19 +118,25 @@ BUNDLED_QUALITY_GATE_SCRIPT = Path(__file__).resolve().parent / "quality_gate_fa
 TEST_MODE_ENV = "CODEX_DEV_LOOP_TEST_MODE"
 # Harness core version for the composable sub-skills (dev-tdd, dev-review, ...).
 # Sub-skills declare a minimum and can verify it with `version --require`.
-CORE_VERSION = "0.5.0"
+CORE_VERSION = "0.5.1"
 # Standalone evidence lives inside the workspace so it stays visible to git and
 # reviewers, exactly like loop evidence. The canonical loop dir is what the
 # single-source-of-truth guard watches for an in-flight loop.
 DEFAULT_EVIDENCE_DIRNAME = ".codex/evidence"
 CANONICAL_LOOP_DIR = ".codex/dev-loop"
-CONFIG_SCHEMA_VERSION = 2
+CONFIG_SCHEMA_VERSION = 3
 DEFAULT_CONFIG = {
     "schema_version": CONFIG_SCHEMA_VERSION,
     "automation_level": "pr_without_merge",
     "source_types": ["markdown", "notion"],
     "quality_profile": "standard",
     "test_failure_limit": 3,
+    "max_units": 8,
+    "max_files_changed": 20,
+    "max_test_retries_per_unit": 3,
+    "max_review_iterations": 3,
+    "max_quality_fix_rounds": 2,
+    "max_diff_lines": 1200,
     "risk_mode": "stop_and_ask",
     "default_scale": "standard",
     "spec_dir": "specs",
@@ -141,6 +169,15 @@ QUALITY_PROFILE_NAMES = set(QUALITY_PROFILES)
 RISK_MODES = {"stop_and_ask", "serious_only", "best_effort"}
 SOURCE_TYPES = {"markdown", "notion"}
 REVIEW_SECTIONS = {
+    REQUIREMENTS_REVIEWER_ROLE: [
+        "Requirement Quality Matrix:",
+        "Observability:",
+        "Failure Conditions:",
+        "Boundaries:",
+        "Non-Goals:",
+        "Test Mapping:",
+        "Blocking Questions:",
+    ],
     "plan-reviewer": ["Findings:", "Required Revisions:", "Blocking Questions:", "Rationale:"],
     "implementation-reviewer": [
         "PR Objective:",
@@ -150,6 +187,21 @@ REVIEW_SECTIONS = {
         "Unexpected Changes:",
         "Risk Summary:",
         "Merge Recommendation:",
+    ],
+    MERGE_INTEGRATOR_ROLE: [
+        "Merged Units:",
+        "Diff Interaction:",
+        "Duplicate Logic:",
+        "Shared Interface Assumptions:",
+        "Test Interaction:",
+        "Hidden Conflict Risks:",
+        "Integration Test Recommendation:",
+        "Required Actions:",
+    ],
+    DOCS_IMPACT_REVIEWER_ROLE: [
+        "Docs Impact",
+        "Required Doc Changes",
+        "Reason",
     ],
     "risk-reviewer": [
         "Architecture Risk:",
@@ -210,13 +262,27 @@ def default_config() -> dict:
     return json.loads(json.dumps(DEFAULT_CONFIG))
 
 
+def normalize_int_config(config: dict, key: str, minimum: int) -> int:
+    try:
+        value = int(config.get(key))
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(f"{key} in codex-dev-loop config must be an integer.") from exc
+    if value < minimum:
+        raise SystemExit(f"{key} in codex-dev-loop config must be >= {minimum}.")
+    config[key] = value
+    return value
+
+
 def normalize_config(raw: object) -> dict:
     if raw is None:
         raw = {}
     if not isinstance(raw, dict):
         raise SystemExit("codex-dev-loop config must be a JSON object.")
+    raw_config = dict(raw)
     config = default_config()
-    config.update(raw)
+    config.update(raw_config)
+    if "max_test_retries_per_unit" not in raw_config and "test_failure_limit" in raw_config:
+        config["max_test_retries_per_unit"] = raw_config["test_failure_limit"]
 
     if config.get("automation_level") not in AUTOMATION_LEVELS:
         raise SystemExit(f"Invalid automation_level in codex-dev-loop config: {config.get('automation_level')!r}")
@@ -229,13 +295,13 @@ def normalize_config(raw: object) -> dict:
     invalid_source_types = sorted(set(config["source_types"]) - SOURCE_TYPES)
     if invalid_source_types:
         raise SystemExit("Invalid source_types in codex-dev-loop config: " + ", ".join(invalid_source_types))
-    try:
-        test_failure_limit = int(config.get("test_failure_limit"))
-    except (TypeError, ValueError) as exc:
-        raise SystemExit("test_failure_limit in codex-dev-loop config must be an integer.") from exc
-    if test_failure_limit not in {0, 1, 2, 3}:
-        raise SystemExit("test_failure_limit in codex-dev-loop config must be one of 0, 1, 2, or 3.")
-    config["test_failure_limit"] = test_failure_limit
+    normalize_int_config(config, "max_units", 1)
+    normalize_int_config(config, "max_files_changed", 1)
+    normalize_int_config(config, "max_test_retries_per_unit", 0)
+    normalize_int_config(config, "max_review_iterations", 1)
+    normalize_int_config(config, "max_quality_fix_rounds", 0)
+    normalize_int_config(config, "max_diff_lines", 1)
+    config["test_failure_limit"] = config["max_test_retries_per_unit"]
     if config.get("default_scale") not in SCALE_INDEX:
         raise SystemExit(f"Invalid default_scale in codex-dev-loop config: {config.get('default_scale')!r}")
     spec_dir = str(config.get("spec_dir") or "").strip().replace("\\", "/")
@@ -295,10 +361,22 @@ def loop_scale(state: dict) -> str:
     return scale
 
 
-def changed_workspace_paths(workspace: Path) -> list[str]:
-    """Staged, unstaged, and untracked paths; the loop commits only after the
-    quality gate, so at skip-decision time this is the full change set."""
-    completed = run_git(workspace, ["status", "--porcelain"], check=True)
+def normalize_repo_path(path: str) -> str:
+    normalized = path.strip().strip('"').replace("\\", "/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized
+
+
+def git_name_only(workspace: Path, args: list[str]) -> list[str]:
+    completed = run_git(workspace, args)
+    if completed.returncode != 0:
+        return []
+    return [normalize_repo_path(line) for line in completed.stdout.splitlines() if normalize_repo_path(line)]
+
+
+def status_workspace_paths(workspace: Path) -> list[str]:
+    completed = run_git(workspace, ["status", "--porcelain", "-uall"], check=True)
     paths: list[str] = []
     for raw_line in completed.stdout.splitlines():
         if len(raw_line) < 4:
@@ -306,32 +384,271 @@ def changed_workspace_paths(workspace: Path) -> list[str]:
         entry = raw_line[3:].strip().strip('"')
         if " -> " in entry:
             entry = entry.split(" -> ", 1)[1].strip().strip('"')
-        if entry:
-            paths.append(entry)
+        normalized = normalize_repo_path(entry)
+        if normalized:
+            paths.append(normalized)
     return paths
 
 
+def changed_workspace_paths(workspace: Path, base_ref: str = "") -> list[str]:
+    """Staged, unstaged, untracked, and optionally branch-diff paths."""
+    paths = status_workspace_paths(workspace)
+    if base_ref:
+        diff_paths = git_name_only(workspace, ["diff", "--name-only", f"{base_ref}...HEAD"])
+        if not diff_paths:
+            diff_paths = git_name_only(workspace, ["diff", "--name-only", f"{base_ref}..HEAD"])
+        paths.extend(diff_paths)
+    seen: set[str] = set()
+    unique: list[str] = []
+    for item in paths:
+        if item and item not in seen:
+            seen.add(item)
+            unique.append(item)
+    return unique
+
+
+def is_sensitive_path(path: str) -> bool:
+    normalized = normalize_repo_path(path)
+    parts = [part.lower() for part in normalized.split("/") if part]
+    if not parts:
+        return False
+    name = parts[-1]
+    return (
+        name in SENSITIVE_FILE_NAMES
+        or (name.startswith("requirements") and name.endswith(".txt"))
+        or name.startswith("dockerfile")
+        or name.startswith(".env")
+        or "secret" in name
+        or "credential" in name
+        or any(name.endswith(suffix) for suffix in SENSITIVE_SUFFIXES)
+        or any(part in SENSITIVE_DIR_TOKENS for part in parts[:-1])
+    )
+
+
 def sensitive_changed_paths(workspace: Path) -> list[str]:
-    sensitive: list[str] = []
-    for path in changed_workspace_paths(workspace):
-        normalized = path.replace("\\", "/")
-        parts = [part.lower() for part in normalized.split("/") if part]
-        if not parts:
+    return [path for path in changed_workspace_paths(workspace) if is_sensitive_path(path)]
+
+
+def scope_ignored_path(path: str) -> bool:
+    normalized = normalize_repo_path(path)
+    return any(normalized.startswith(prefix) for prefix in SCOPE_ALWAYS_IGNORED_PREFIXES)
+
+
+def extract_scope_paths_from_text(text: str) -> list[str]:
+    paths: list[str] = []
+    in_file_scope = False
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        lower = line.lower()
+        if lower.startswith("## "):
+            in_file_scope = lower.startswith("## file and module scope")
             continue
-        name = parts[-1]
-        matched = (
-            name in SENSITIVE_FILE_NAMES
-            or (name.startswith("requirements") and name.endswith(".txt"))
-            or name.startswith("dockerfile")
-            or name.startswith(".env")
-            or "secret" in name
-            or "credential" in name
-            or any(name.endswith(suffix) for suffix in SENSITIVE_SUFFIXES)
-            or any(part in SENSITIVE_DIR_TOKENS for part in parts[:-1])
+        relevant = in_file_scope or lower.startswith("- scope:") or lower.startswith("scope:")
+        if not relevant:
+            continue
+        if ":" in line and lower.startswith(("- scope:", "scope:")):
+            line = line.split(":", 1)[1]
+        line = line.replace("`", " ").replace("[", " ").replace("]", " ")
+        for token in re.split(r"[\s,;]+", line):
+            cleaned = token.strip().strip("'\"()[]{}<>").rstrip(".:")
+            cleaned = normalize_repo_path(cleaned)
+            if not cleaned or cleaned.lower() in {"none", "n/a", "na", "tbd", "todo"}:
+                continue
+            if "://" in cleaned or cleaned.startswith("#"):
+                continue
+            if any(char in cleaned for char in ("/", "*")) or "." in Path(cleaned).name:
+                paths.append(cleaned)
+    seen: set[str] = set()
+    unique: list[str] = []
+    for item in paths:
+        if item and item not in seen:
+            seen.add(item)
+            unique.append(item)
+    return unique
+
+
+def declared_scope_paths(root: Path, state: dict | None = None, plan_path: Path | None = None, design_path: Path | None = None) -> list[str]:
+    plan_path = plan_path or (root / "development-plan.md")
+    design_path = design_path or (root / "technical-design.md")
+    paths: list[str] = []
+    for item in (design_path, plan_path):
+        if item.exists():
+            paths.extend(extract_scope_paths_from_text(item.read_text(encoding="utf-8", errors="replace")))
+    if state is not None:
+        try:
+            delta = parse_spec_delta((root / "spec-delta.md").read_text(encoding="utf-8", errors="replace"))
+            spec_dir = loop_config(state).get("spec_dir", "specs")
+            for capability in delta.get("capabilities", {}):
+                paths.append(normalize_repo_path(f"{spec_dir}/{capability}.md"))
+        except Exception:
+            pass
+    seen: set[str] = set()
+    unique: list[str] = []
+    for item in paths:
+        normalized = normalize_repo_path(item)
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            unique.append(normalized)
+    return unique
+
+
+def path_in_declared_scope(path: str, declared: list[str]) -> bool:
+    normalized = normalize_repo_path(path)
+    for scope in declared:
+        item = normalize_repo_path(scope)
+        if not item:
+            continue
+        if fnmatch.fnmatch(normalized, item):
+            return True
+        if item.endswith("/") and normalized.startswith(item):
+            return True
+        if normalized == item or normalized.startswith(item.rstrip("/") + "/"):
+            return True
+    return False
+
+
+def diff_line_churn(workspace: Path, base_ref: str = "") -> int:
+    commands = [["diff", "--numstat"]]
+    if base_ref:
+        commands.insert(0, ["diff", "--numstat", f"{base_ref}...HEAD"])
+        commands.insert(1, ["diff", "--numstat", f"{base_ref}..HEAD"])
+    total = 0
+    for command in commands:
+        completed = run_git(workspace, command)
+        if completed.returncode != 0 or not completed.stdout.strip():
+            continue
+        for raw_line in completed.stdout.splitlines():
+            parts = raw_line.split("	")
+            if len(parts) < 3:
+                continue
+            for value in parts[:2]:
+                if value.isdigit():
+                    total += int(value)
+        if total:
+            return total
+    return total
+
+
+def scope_check_result(
+    root: Path,
+    workspace: Path,
+    state: dict | None = None,
+    plan_path: Path | None = None,
+    design_path: Path | None = None,
+    base_ref: str = "",
+) -> dict:
+    changed = [path for path in changed_workspace_paths(workspace, base_ref=base_ref) if not scope_ignored_path(path)]
+    declared = declared_scope_paths(root, state=state, plan_path=plan_path, design_path=design_path)
+    sensitive_changed = [path for path in changed if is_sensitive_path(path)]
+    out_of_scope = [path for path in changed if not path_in_declared_scope(path, declared)]
+    findings: list[str] = []
+    if changed and not declared:
+        findings.append("No declared file scope found in technical-design.md or development-plan.md.")
+    if out_of_scope:
+        findings.append("Changed paths outside declared scope: " + ", ".join(sorted(out_of_scope)))
+    scale = loop_scale(state) if state else ""
+    if sensitive_changed and (not scale or scale == "small"):
+        findings.append(
+            "Sensitive paths changed; escalate scale to standard/large and run the real risk review: "
+            + ", ".join(sorted(sensitive_changed))
         )
-        if matched:
-            sensitive.append(path)
-    return sensitive
+    churn = diff_line_churn(workspace, base_ref=base_ref)
+    if len(changed) >= SCOPE_FORMATTING_FILE_THRESHOLD or churn >= SCOPE_FORMATTING_CHURN_THRESHOLD:
+        findings.append(
+            f"Large formatting/noise risk: {len(changed)} changed file(s), {churn} changed line(s). Split formatting from behavior or declare the wider scope."
+        )
+    return {
+        "status": "passed" if not findings else "failed",
+        "changed_paths": changed,
+        "declared_scope": declared,
+        "out_of_scope": out_of_scope,
+        "sensitive_paths": sensitive_changed,
+        "line_churn": churn,
+        "findings": findings,
+    }
+
+
+def print_scope_check(result: dict) -> None:
+    print(f"SCOPE_CHECK_STATUS={result['status']}")
+    print("SCOPE_CHECK_CHANGED=" + (", ".join(result["changed_paths"]) or "none"))
+    print("SCOPE_CHECK_DECLARED=" + (", ".join(result["declared_scope"]) or "none"))
+    if result["findings"]:
+        print("Scope check findings:")
+        for finding in result["findings"]:
+            print(f"- {finding}")
+
+
+def scope_check_base_ref(state: dict, run_cwd: Path, workspace: Path) -> str:
+    git = state.get("git", {})
+    if run_cwd.resolve() != workspace.resolve():
+        return git.get("branch", "")
+    return git.get("base_commit", "")
+
+
+def budget_check_result(root: Path, workspace: Path, state: dict, run_cwd: Path | None = None, include_diff: bool = True, include_units: bool = True) -> dict:
+    run_cwd = run_cwd or workspace
+    config = loop_config(state)
+    units = planned_units(root) if include_units else []
+    findings: list[str] = []
+    if include_units and len(units) > config["max_units"]:
+        findings.append(f"max_units exceeded: {len(units)} planned unit(s) > {config['max_units']}.")
+    changed: list[str] = []
+    churn = 0
+    if include_diff and is_git_repo(run_cwd):
+        base_ref = scope_check_base_ref(state, run_cwd, workspace)
+        changed = [path for path in changed_workspace_paths(run_cwd, base_ref=base_ref) if not scope_ignored_path(path)]
+        churn = diff_line_churn(run_cwd, base_ref=base_ref)
+        if len(changed) > config["max_files_changed"]:
+            findings.append(f"max_files_changed exceeded: {len(changed)} changed file(s) > {config['max_files_changed']}.")
+        if churn > config["max_diff_lines"]:
+            findings.append(f"max_diff_lines exceeded: {churn} changed line(s) > {config['max_diff_lines']}.")
+    return {
+        "status": "passed" if not findings else "failed",
+        "planned_units": len(units),
+        "changed_paths": changed,
+        "line_churn": churn,
+        "findings": findings,
+    }
+
+
+def print_budget_check(result: dict) -> None:
+    print(f"BUDGET_CHECK_STATUS={result['status']}")
+    print(f"BUDGET_CHECK_UNITS={result['planned_units']}")
+    print("BUDGET_CHECK_CHANGED=" + (", ".join(result["changed_paths"]) or "none"))
+    print(f"BUDGET_CHECK_DIFF_LINES={result['line_churn']}")
+    if result["findings"]:
+        print("Budget/time-box findings:")
+        for finding in result["findings"]:
+            print(f"- {finding}")
+
+
+def run_budget_check_hook(
+    root: Path,
+    workspace: Path,
+    state: dict,
+    context: str,
+    run_cwd: Path | None = None,
+    include_diff: bool = True,
+    include_units: bool = True,
+) -> bool:
+    result = budget_check_result(root, workspace, state, run_cwd=run_cwd, include_diff=include_diff, include_units=include_units)
+    state["budget_check"] = {**result, "context": context, "recorded_at": now()}
+    if result["status"] == "passed":
+        return True
+    add_blocker(state, f"budget/time-box reached at {context}: " + "; ".join(result["findings"]))
+    print_budget_check(result)
+    return False
+
+
+def run_scope_check_hook(root: Path, workspace: Path, state: dict, context: str, run_cwd: Path | None = None) -> bool:
+    run_cwd = run_cwd or workspace
+    result = scope_check_result(root, run_cwd, state=state, base_ref=scope_check_base_ref(state, run_cwd, workspace))
+    state["scope_check"] = {**result, "context": context, "recorded_at": now()}
+    if result["status"] == "passed":
+        return True
+    add_blocker(state, f"scope-check failed at {context}: " + "; ".join(result["findings"]))
+    print_scope_check(result)
+    return False
 
 
 def assert_small_scale_skip_allowed(state: dict, workspace: Path) -> None:
@@ -396,6 +713,10 @@ def hash_files(base: Path, names: list[str]) -> str:
 
 def plan_fingerprint(root: Path) -> str:
     return hash_files(root, CORE_ARTIFACTS)
+
+
+def source_fingerprint(root: Path) -> str:
+    return hash_files(root, ["source.md"])
 
 
 def is_excluded_workspace_path(path: str) -> bool:
@@ -496,7 +817,7 @@ def workspace_fingerprint(workspace: Path) -> str:
 
 
 def evidence_fingerprint(root: Path, workspace: Path) -> dict:
-    return {"plan": plan_fingerprint(root), "workspace": workspace_fingerprint(workspace)}
+    return {"source": source_fingerprint(root), "plan": plan_fingerprint(root), "workspace": workspace_fingerprint(workspace)}
 
 
 def current_record(record: dict, root: Path, workspace: Path, include_workspace: bool) -> bool:
@@ -589,13 +910,23 @@ def attempt_stage(record: dict) -> str:
     return record.get("stage") or "green"
 
 
+def red_validation_allows_evidence(record: dict) -> bool:
+    validation = record.get("red_validation")
+    if not isinstance(validation, dict):
+        # Compatibility with evidence recorded before red-test-validator existed.
+        return True
+    return validation.get("status") == "pass"
+
+
 def unit_has_red_evidence(root: Path, state: dict, unit: str) -> bool:
-    """A red run proves the test can fail; only status 'failed' counts
-    (timeout/error prove nothing) and it must match the reviewed plan."""
+    """A red run proves the test can fail for the intended reason; only failed,
+    validator-passed evidence counts and it must match the reviewed plan."""
     for record in state.get("test_attempts", {}).get(unit, []):
         if attempt_stage(record) != "red":
             continue
         if record.get("status") != "failed":
+            continue
+        if not red_validation_allows_evidence(record):
             continue
         if record.get("plan_fingerprint") == plan_fingerprint(root):
             return True
@@ -619,6 +950,31 @@ def unit_green_is_current(record: dict, root: Path, workspace: Path) -> bool:
     if record.get("status") != "passed" or attempt_stage(record) != "green":
         return False
     return current_record(record, root, workspace, include_workspace=True)
+
+
+def has_worktree_evidence(state: dict) -> bool:
+    return any(record.get("worktree") for attempts in state.get("test_attempts", {}).values() for record in attempts)
+
+
+def required_review_roles(state: dict, automation_level: str) -> list[str]:
+    if automation_level == "planning_only":
+        return [REQUIREMENTS_REVIEWER_ROLE, "plan-reviewer"]
+    roles = [REQUIREMENTS_REVIEWER_ROLE, "plan-reviewer", "implementation-reviewer", DOCS_IMPACT_REVIEWER_ROLE, "risk-reviewer"]
+    if has_worktree_evidence(state):
+        roles.insert(2, MERGE_INTEGRATOR_ROLE)
+    return roles
+
+
+def valid_review_decisions(role: str) -> set[str]:
+    if role == DOCS_IMPACT_REVIEWER_ROLE:
+        return {"no-docs-needed", "docs-needed", "block"}
+    return {"pass", "needs-revision", "needs-human-review", "block"}
+
+
+def review_decision_allows_progress(role: str, decision: str) -> bool:
+    if role == DOCS_IMPACT_REVIEWER_ROLE:
+        return decision == "no-docs-needed"
+    return decision == "pass"
 
 
 def all_planned_tests_passed(root: Path, state: dict, workspace: Path) -> bool:
@@ -655,6 +1011,60 @@ def add_blocker(state: dict, message: str) -> None:
     blockers = state.setdefault("blockers", [])
     if message not in blockers:
         blockers.append(message)
+
+
+def review_iteration_count(state: dict, role: str) -> int:
+    return int(state.get("review_iterations", {}).get(role, 0) or 0)
+
+
+def increment_review_iteration(state: dict, role: str) -> None:
+    iterations = state.setdefault("review_iterations", {})
+    iterations[role] = review_iteration_count(state, role) + 1
+
+
+def run_review_budget_hook(root: Path, workspace: Path, state: dict, role: str) -> bool:
+    limit = loop_config(state)["max_review_iterations"]
+    count = review_iteration_count(state, role)
+    if count < limit:
+        return True
+    result = {
+        "status": "failed",
+        "planned_units": len(planned_units(root)),
+        "changed_paths": [],
+        "line_churn": 0,
+        "findings": [f"max_review_iterations exceeded for {role}: {count} recorded iteration(s) >= {limit}."],
+    }
+    state["budget_check"] = {**result, "context": f"before {role} review", "recorded_at": now()}
+    add_blocker(state, f"budget/time-box reached before {role} review: " + "; ".join(result["findings"]))
+    print_budget_check(result)
+    return False
+
+
+def quality_failure_rounds(state: dict) -> int:
+    return int(state.get("budget_usage", {}).get("quality_fix_rounds", 0) or 0)
+
+
+def increment_quality_failure_round(state: dict) -> None:
+    usage = state.setdefault("budget_usage", {})
+    usage["quality_fix_rounds"] = quality_failure_rounds(state) + 1
+
+
+def run_quality_budget_hook(root: Path, workspace: Path, state: dict) -> bool:
+    limit = loop_config(state)["max_quality_fix_rounds"]
+    count = quality_failure_rounds(state)
+    if count == 0 or count < limit:
+        return True
+    result = {
+        "status": "failed",
+        "planned_units": len(planned_units(root)),
+        "changed_paths": [],
+        "line_churn": 0,
+        "findings": [f"max_quality_fix_rounds exceeded: {count} failed quality round(s) >= {limit}."],
+    }
+    state["budget_check"] = {**result, "context": "before quality gate", "recorded_at": now()}
+    add_blocker(state, "budget/time-box reached before quality gate: " + "; ".join(result["findings"]))
+    print_budget_check(result)
+    return False
 
 
 def assert_no_blockers(state: dict) -> None:
@@ -840,7 +1250,12 @@ def assert_pr_artifacts(root: Path) -> None:
 
 def clear_downstream_state(state: dict, target: str) -> None:
     if target in {"intake", "planning", "plan_review"}:
+        preserved_requirements_review = None
+        if target != "intake":
+            preserved_requirements_review = state.get("reviews", {}).get(REQUIREMENTS_REVIEWER_ROLE)
         state["reviews"] = {}
+        if preserved_requirements_review:
+            state["reviews"][REQUIREMENTS_REVIEWER_ROLE] = preserved_requirements_review
         state["test_attempts"] = {}
         state["quality_gate"] = {}
         state["git"] = {}
@@ -849,7 +1264,9 @@ def clear_downstream_state(state: dict, target: str) -> None:
         state.pop("spec_merge", None)
         return
     if target == "branch":
+        state.get("reviews", {}).pop(MERGE_INTEGRATOR_ROLE, None)
         state.get("reviews", {}).pop("implementation-reviewer", None)
+        state.get("reviews", {}).pop(DOCS_IMPACT_REVIEWER_ROLE, None)
         state.get("reviews", {}).pop("risk-reviewer", None)
         state["test_attempts"] = {}
         state["quality_gate"] = {}
@@ -859,43 +1276,47 @@ def clear_downstream_state(state: dict, target: str) -> None:
         state.pop("spec_merge", None)
         return
     if target == "implementation":
+        state.get("reviews", {}).pop(MERGE_INTEGRATOR_ROLE, None)
         state.get("reviews", {}).pop("implementation-reviewer", None)
+        state.get("reviews", {}).pop(DOCS_IMPACT_REVIEWER_ROLE, None)
         state.get("reviews", {}).pop("risk-reviewer", None)
         state["test_attempts"] = {}
         state["quality_gate"] = {}
         git = state.get("git", {})
-        state["git"] = {"branch": git.get("branch", ""), "branch_recorded_at": git.get("branch_recorded_at", "")}
+        state["git"] = {"branch": git.get("branch", ""), "branch_recorded_at": git.get("branch_recorded_at", ""), "base_commit": git.get("base_commit", "")}
         state["github_actions"] = {}
         state["blockers"] = []
         state.pop("spec_merge", None)
         return
     if target == "implementation_review":
         state.get("reviews", {}).pop("implementation-reviewer", None)
+        state.get("reviews", {}).pop(DOCS_IMPACT_REVIEWER_ROLE, None)
         state.get("reviews", {}).pop("risk-reviewer", None)
         state["quality_gate"] = {}
         git = state.get("git", {})
-        state["git"] = {"branch": git.get("branch", ""), "branch_recorded_at": git.get("branch_recorded_at", "")}
+        state["git"] = {"branch": git.get("branch", ""), "branch_recorded_at": git.get("branch_recorded_at", ""), "base_commit": git.get("base_commit", "")}
         state["github_actions"] = {}
         state["blockers"] = []
         return
     if target == "risk_review":
+        state.get("reviews", {}).pop(DOCS_IMPACT_REVIEWER_ROLE, None)
         state.get("reviews", {}).pop("risk-reviewer", None)
         state["quality_gate"] = {}
         git = state.get("git", {})
-        state["git"] = {"branch": git.get("branch", ""), "branch_recorded_at": git.get("branch_recorded_at", "")}
+        state["git"] = {"branch": git.get("branch", ""), "branch_recorded_at": git.get("branch_recorded_at", ""), "base_commit": git.get("base_commit", "")}
         state["github_actions"] = {}
         state["blockers"] = []
         return
     if target == "quality_gate":
         state["quality_gate"] = {}
         git = state.get("git", {})
-        state["git"] = {"branch": git.get("branch", ""), "branch_recorded_at": git.get("branch_recorded_at", "")}
+        state["git"] = {"branch": git.get("branch", ""), "branch_recorded_at": git.get("branch_recorded_at", ""), "base_commit": git.get("base_commit", "")}
         state["github_actions"] = {}
         state["blockers"] = []
         return
     if target == "pr":
         git = state.get("git", {})
-        state["git"] = {"branch": git.get("branch", ""), "branch_recorded_at": git.get("branch_recorded_at", "")}
+        state["git"] = {"branch": git.get("branch", ""), "branch_recorded_at": git.get("branch_recorded_at", ""), "base_commit": git.get("base_commit", "")}
         state["github_actions"] = {}
         state["blockers"] = []
         return
@@ -906,8 +1327,10 @@ def clear_downstream_state(state: dict, target: str) -> None:
 
 def review_is_current(state: dict, role: str, root: Path, workspace: Path) -> bool:
     record = state.get("reviews", {}).get(role, {})
-    if record.get("decision") != "pass":
+    if not review_decision_allows_progress(role, record.get("decision", "")):
         return False
+    if role == REQUIREMENTS_REVIEWER_ROLE:
+        return record.get("source_fingerprint") == source_fingerprint(root)
     return current_record(record, root, workspace, include_workspace=role != "plan-reviewer")
 
 
@@ -952,6 +1375,8 @@ def cloud_is_current(state: dict, root: Path, workspace: Path) -> bool:
 def assert_completion_prereqs(root: Path, state: dict, workspace: Path) -> None:
     assert_no_blockers(state)
     assert_core_artifacts(root, loop_scale(state))
+    if not review_is_current(state, REQUIREMENTS_REVIEWER_ROLE, root, workspace):
+        raise SystemExit("Cannot complete before requirements-reviewer passes for the current source.md.")
     automation_level = loop_config(state)["automation_level"]
     if automation_level == "planning_only":
         if not review_is_current(state, "plan-reviewer", root, workspace):
@@ -973,8 +1398,10 @@ def assert_phase_prereqs(root: Path, state: dict, target: str, workspace: Path) 
         return
     assert_no_blockers(state)
     scale = loop_scale(state)
-    if target == "planning":
+    if target in {"planning", "plan_review", "branch", "implementation", "implementation_review", "risk_review", "quality_gate", "pr", "cloud_checks", "complete"}:
         assert_source_ready(root)
+        if not review_is_current(state, REQUIREMENTS_REVIEWER_ROLE, root, workspace):
+            raise SystemExit("Cannot advance before requirements-reviewer passes for the current source.md.")
     if target in {"plan_review", "branch", "implementation", "implementation_review", "risk_review", "quality_gate", "pr", "cloud_checks", "complete"}:
         assert_core_artifacts(root, scale)
     if target in {"branch", "implementation", "implementation_review", "risk_review", "quality_gate", "pr", "cloud_checks", "complete"}:
@@ -994,6 +1421,8 @@ def assert_phase_prereqs(root: Path, state: dict, target: str, workspace: Path) 
                 "Cannot advance before the spec baseline is reconciled with spec-delta.md; "
                 "merge the delta into the spec directory and run record-spec-merge."
             )
+        if has_worktree_evidence(state) and not review_is_current(state, MERGE_INTEGRATOR_ROLE, root, workspace):
+            raise SystemExit("Cannot advance after parallel worktree merges before merge-integrator passes for the current merged tree.")
     if target in {"risk_review", "quality_gate", "pr", "cloud_checks", "complete"}:
         if not review_is_current(state, "implementation-reviewer", root, workspace):
             raise SystemExit("Cannot advance before implementation-reviewer passes.")
@@ -1003,6 +1432,8 @@ def assert_phase_prereqs(root: Path, state: dict, target: str, workspace: Path) 
                 assert_small_scale_skip_allowed(state, workspace)
             else:
                 raise SystemExit("Cannot advance before risk-reviewer passes.")
+        if not review_is_current(state, DOCS_IMPACT_REVIEWER_ROLE, root, workspace):
+            raise SystemExit("Cannot advance to quality gate before docs-impact-reviewer returns no-docs-needed for the current workspace.")
     if target in {"pr", "cloud_checks", "complete"}:
         if not quality_is_current(state, root, workspace):
             raise SystemExit("Cannot advance before quality gate passes.")
@@ -1057,10 +1488,15 @@ def validate_review_report(role: str, report: Path, agent_id: str, root: Path, w
     if missing:
         raise SystemExit(f"{role} report is missing required sections: {', '.join(missing)}")
     report_agent = parse_report_field(text, "Agent ID:")
-    report_plan = parse_report_field(text, "Plan Fingerprint:")
-    report_workspace = parse_report_field(text, "Workspace Fingerprint:")
     if report_agent != agent_id:
         raise SystemExit(f"{role} report Agent ID does not match --agent-id.")
+    if role == REQUIREMENTS_REVIEWER_ROLE:
+        report_source = parse_report_field(text, "Source Fingerprint:")
+        if report_source != source_fingerprint(root):
+            raise SystemExit(f"{role} report source fingerprint is stale or missing.")
+        return
+    report_plan = parse_report_field(text, "Plan Fingerprint:")
+    report_workspace = parse_report_field(text, "Workspace Fingerprint:")
     if report_plan != plan_fingerprint(root):
         raise SystemExit(f"{role} report plan fingerprint is stale or missing.")
     if role != "plan-reviewer" and report_workspace != workspace_fingerprint(workspace):
@@ -1072,6 +1508,67 @@ def validate_agent_id(agent_id: str) -> None:
         raise SystemExit("Subagent review records require --agent-id.")
     if len(agent_id.strip()) < 12:
         raise SystemExit("Subagent agent id is too short to be useful as provenance.")
+
+
+def expected_failure_matches(log_text: str, expected: str) -> bool:
+    expected = expected.strip().lower()
+    if not expected:
+        return True
+    haystack = log_text.lower()
+    if expected in haystack:
+        return True
+    tokens = [
+        token
+        for token in re.findall(r"[a-z0-9_.-]{3,}", expected)
+        if token not in EXPECTED_FAILURE_STOP_WORDS
+    ]
+    if not tokens:
+        return False
+    matches = sum(1 for token in tokens if token in haystack)
+    required = max(1, (len(tokens) + 1) // 2)
+    return matches >= required
+
+
+def validate_red_failure(unit: str, log_path: Path, expected: str = "", status: str = "failed") -> dict:
+    expected = expected.strip()
+    if status == "passed":
+        return {
+            "status": "invalid",
+            "reason": "red-stage test passed before implementation; the planned missing behavior may already exist or the test is too weak.",
+            "expected": expected,
+        }
+    if status != "failed":
+        return {
+            "status": "invalid",
+            "reason": f"red-stage run ended with {status}; fix the test harness so the red run fails cleanly.",
+            "expected": expected,
+        }
+    if not log_path.exists():
+        return {"status": "invalid", "reason": f"red-stage log does not exist: {log_path}", "expected": expected}
+    log_text = log_path.read_text(encoding="utf-8", errors="replace")
+    lower = log_text.lower()
+    for reason, patterns in RED_FAILURE_INFRA_PATTERNS:
+        matched = all(pattern in lower for pattern in patterns) if reason == "missing fixture" else any(pattern in lower for pattern in patterns)
+        if matched:
+            return {
+                "status": "invalid",
+                "reason": f"red-stage failed because of {reason}, not the target behavior.",
+                "expected": expected,
+            }
+    if any(pattern in lower for pattern in RED_FAILURE_SNAPSHOT_PATTERNS):
+        return {
+            "status": "needs-human-review",
+            "reason": "red-stage failure appears to involve snapshot drift; confirm this is the intended missing behavior before recording red evidence.",
+            "expected": expected,
+        }
+    if expected and not expected_failure_matches(log_text, expected):
+        return {
+            "status": "invalid",
+            "reason": "red-stage failure log does not match the declared expected failure reason.",
+            "expected": expected,
+        }
+    reason = "red-stage failed for the declared expected reason." if expected else "red-stage failure passed built-in infrastructure-error screening."
+    return {"status": "pass", "reason": reason, "expected": expected}
 
 
 def load_test_meta(meta_path: Path, unit: str, workspace: Path) -> dict:
@@ -1325,7 +1822,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         "scale": scale,
         "source": str(source) if source else "",
         "source_type": args.source_type,
-        "source_fingerprint": sha256_bytes((root / "source.md").read_bytes()),
+        "source_fingerprint": source_fingerprint(root),
         "reviews": {},
         "test_attempts": {},
         "quality_gate": {},
@@ -1335,7 +1832,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     }
     write_state(root, state)
     print(f"Initialized dev loop at {root} (phase: intake, scale: {scale})")
-    print("Clarify Goal and Acceptance Criteria with the user if they are unclear, record Q&A in clarification-log.md, then set-phase planning.")
+    print("Clarify Goal and Acceptance Criteria with the user, record Q&A in clarification-log.md, run requirements-reviewer, then set-phase planning.")
     return 0
 
 
@@ -1346,6 +1843,17 @@ def cmd_set_phase(args: argparse.Namespace) -> int:
     workspace = Path(args.workspace).resolve()
     state = read_state(root)
     assert_config_allows_phase(state, args.phase)
+    target_index = PHASE_INDEX[args.phase]
+    if not run_budget_check_hook(
+        root,
+        workspace,
+        state,
+        f"before phase {args.phase}",
+        include_diff=target_index >= PHASE_INDEX["implementation"],
+        include_units=target_index >= PHASE_INDEX["plan_review"],
+    ):
+        write_state(root, state)
+        return 1
     assert_transition(root, state, args.phase, workspace)
     if PHASE_INDEX[args.phase] < PHASE_INDEX[phase(state)]:
         clear_downstream_state(state, args.phase)
@@ -1358,6 +1866,7 @@ def cmd_set_phase(args: argparse.Namespace) -> int:
 def cmd_fingerprint(args: argparse.Namespace) -> int:
     root = Path(args.root)
     workspace = Path(args.workspace).resolve()
+    print(f"SOURCE_FINGERPRINT={source_fingerprint(root)}")
     print(f"PLAN_FINGERPRINT={plan_fingerprint(root)}")
     print(f"WORKSPACE_FINGERPRINT={workspace_fingerprint(workspace)}")
     return 0
@@ -1372,14 +1881,25 @@ def cmd_record_review(args: argparse.Namespace) -> int:
     if not src.exists():
         raise SystemExit(f"Review report does not exist: {src}")
     decision = parse_decision(src)
-    if decision not in {"pass", "needs-revision", "needs-human-review", "block"}:
-        raise SystemExit(f"Review report has invalid or missing Decision: {src}")
+    if decision not in valid_review_decisions(role):
+        expected = ", ".join(sorted(valid_review_decisions(role)))
+        raise SystemExit(f"Review report has invalid or missing Decision: {src}; expected one of: {expected}")
     root = Path(args.root)
     workspace = Path(args.workspace).resolve()
     state = read_state(root)
     validate_review_report(role, src, args.agent_id, root, workspace)
-    if role == "plan-reviewer":
+    if role == REQUIREMENTS_REVIEWER_ROLE:
+        assert_phase(state, {"intake"})
+    elif role == "plan-reviewer":
         assert_phase(state, {"planning", "plan_review"})
+    elif role == MERGE_INTEGRATOR_ROLE:
+        assert_phase(state, {"implementation"})
+        if not has_worktree_evidence(state):
+            raise SystemExit("merge-integrator is only recorded after one or more worktree test records exist.")
+    elif role == DOCS_IMPACT_REVIEWER_ROLE:
+        assert_phase(state, {"implementation_review", "risk_review"})
+        if not review_is_current(state, "implementation-reviewer", root, workspace):
+            raise SystemExit("Cannot record docs-impact review before implementation-reviewer passes.")
     elif role == "implementation-reviewer":
         assert_phase(state, {"implementation", "implementation_review"})
         if not all_planned_tests_passed(root, state, workspace):
@@ -1389,6 +1909,10 @@ def cmd_record_review(args: argparse.Namespace) -> int:
         assert_phase(state, {"implementation_review", "risk_review"})
         if not review_is_current(state, "implementation-reviewer", root, workspace):
             raise SystemExit("Cannot record risk review before implementation-reviewer passes.")
+    if not run_review_budget_hook(root, workspace, state, role):
+        write_state(root, state)
+        return 1
+    increment_review_iteration(state, role)
     dest = root / "reviews" / f"{role}.md"
     copy_report(src, dest)
     fingerprints = evidence_fingerprint(root, workspace)
@@ -1396,13 +1920,18 @@ def cmd_record_review(args: argparse.Namespace) -> int:
         "decision": decision,
         "path": str(dest),
         "agent_id": args.agent_id,
-        "plan_fingerprint": fingerprints["plan"],
-        "workspace_fingerprint": fingerprints["workspace"] if role != "plan-reviewer" else "",
+        "source_fingerprint": fingerprints["source"] if role == REQUIREMENTS_REVIEWER_ROLE else "",
+        "plan_fingerprint": fingerprints["plan"] if role != REQUIREMENTS_REVIEWER_ROLE else "",
+        "workspace_fingerprint": fingerprints["workspace"] if role not in {REQUIREMENTS_REVIEWER_ROLE, "plan-reviewer"} else "",
         "report_fingerprint": sha256_bytes(dest.read_bytes()),
         "recorded_at": now(),
     }
-    if decision == "block" or (role != "plan-reviewer" and decision != "pass"):
+    if decision == "block" or (role not in {REQUIREMENTS_REVIEWER_ROLE, "plan-reviewer", DOCS_IMPACT_REVIEWER_ROLE} and decision != "pass"):
         add_blocker(state, f"{role} returned {decision}")
+        write_state(root, state)
+        print(f"{role}: {decision}")
+        return 1
+    if role == DOCS_IMPACT_REVIEWER_ROLE and decision != "no-docs-needed":
         write_state(root, state)
         print(f"{role}: {decision}")
         return 1
@@ -1420,6 +1949,7 @@ def record_test_meta(
     stage: str = "green",
     run_cwd: Path | None = None,
     worktree: str = "",
+    expected_failure: str = "",
 ) -> int:
     run_cwd = run_cwd or workspace
     meta = load_test_meta(meta_path, unit, run_cwd)
@@ -1437,8 +1967,10 @@ def record_test_meta(
     }
     if worktree:
         record["worktree"] = worktree
-    attempts.append(record)
     if stage == "red":
+        validation = validate_red_failure(unit, Path(meta["log_path"]), expected_failure, status=meta["status"])
+        record["red_validation"] = validation
+        attempts.append(record)
         write_state(root, state)
         if meta["status"] == "passed":
             print(
@@ -1449,8 +1981,12 @@ def record_test_meta(
         if meta["status"] != "failed":
             print(f"{unit}: red-stage run ended with {meta['status']}; fix the test harness so the red run fails cleanly.")
             return 1
-        print(f"{unit}: red evidence recorded (attempt {len(attempts)})")
+        if validation["status"] != "pass":
+            print(f"{unit}: red-stage failure rejected by red-test-validator ({validation['status']}): {validation['reason']}")
+            return 1
+        print(f"{unit}: red evidence recorded (attempt {len(attempts)}; red-test-validator pass)")
         return 0
+    attempts.append(record)
     # test_failure_limit is the number of automatic retries allowed after a
     # failure: 0 blocks on the first failure, 3 blocks on the fourth
     # consecutive failure. Counting is consecutive (a pass resets it), skips
@@ -1467,7 +2003,7 @@ def record_test_meta(
         if reset_marker and item.get("recorded_at", "") <= reset_marker:
             break
         consecutive_failures += 1
-    configured_limit = loop_config(state)["test_failure_limit"]
+    configured_limit = loop_config(state)["max_test_retries_per_unit"]
     stop_after = configured_limit + 1
     if consecutive_failures >= stop_after and meta["status"] != "passed":
         add_blocker(
@@ -1476,6 +2012,14 @@ def record_test_meta(
         )
         write_state(root, state)
         print(f"{unit}: failed {consecutive_failures} consecutive time(s)")
+        return 1
+    if meta["status"] == "passed" and not run_scope_check_hook(root, workspace, state, f"{unit} green", run_cwd=run_cwd):
+        write_state(root, state)
+        print(f"{unit}: green test passed, but scope-check failed.")
+        return 1
+    if meta["status"] == "passed" and not run_budget_check_hook(root, workspace, state, f"{unit} green", run_cwd=run_cwd):
+        write_state(root, state)
+        print(f"{unit}: green test passed, but budget/time-box check failed.")
         return 1
     write_state(root, state)
     print(f"{unit}: {meta['status']} attempt {len(attempts)}")
@@ -1529,6 +2073,7 @@ def run_test_gate(
     stage: str,
     timeout: int,
     script: Path,
+    expected_failure: str = "",
 ) -> int:
     if stage == "green":
         assert_green_stage_allowed(root, state, unit)
@@ -1549,7 +2094,7 @@ def run_test_gate(
     meta = parse_key_value_output(result.stdout, "AUTODEV_TEST_META")
     if not meta:
         raise SystemExit("Test gate did not report AUTODEV_TEST_META.")
-    return record_test_meta(root, workspace, state, unit, Path(meta), stage=stage)
+    return record_test_meta(root, workspace, state, unit, Path(meta), stage=stage, expected_failure=expected_failure)
 
 
 def cmd_run_test(args: argparse.Namespace) -> int:
@@ -1561,7 +2106,7 @@ def cmd_run_test(args: argparse.Namespace) -> int:
     if args.stage not in TEST_STAGES:
         raise SystemExit(f"Unknown test stage: {args.stage!r}; use red or green.")
     script = resolve_test_gate_script(loop_config(state), args.test_gate_script)
-    return run_test_gate(root, workspace, state, args.unit, args.command, args.stage, args.timeout, script)
+    return run_test_gate(root, workspace, state, args.unit, args.command, args.stage, args.timeout, script, expected_failure=args.expected_failure)
 
 
 def is_linked_worktree(workspace: Path, candidate: Path) -> bool:
@@ -1608,6 +2153,7 @@ def cmd_record_test(args: argparse.Namespace) -> int:
         stage=args.stage,
         run_cwd=worktree,
         worktree=str(worktree),
+        expected_failure=args.expected_failure,
     )
 
 
@@ -1624,6 +2170,8 @@ def cmd_verify_units(args: argparse.Namespace) -> int:
     units = planned_units(root)
     if not units:
         raise SystemExit("development-plan.md has no '## Unit dev-*' sections to verify.")
+    if has_worktree_evidence(state) and not review_is_current(state, MERGE_INTEGRATOR_ROLE, root, workspace):
+        raise SystemExit("Cannot verify merged worktree units before merge-integrator passes for the current merged tree.")
     commands: dict[str, str] = {}
     missing: list[str] = []
     for unit in units:
@@ -1673,6 +2221,7 @@ def record_quality_result(
             "exit_code": exit_code,
             "recorded_at": now(),
         }
+        increment_quality_failure_round(state)
         add_blocker(state, f"quality gate process exited {exit_code}")
         write_state(root, state)
         print("Quality gate failed")
@@ -1707,6 +2256,7 @@ def record_quality_result(
         "recorded_at": now(),
     }
     if status != "passed":
+        increment_quality_failure_round(state)
         add_blocker(state, f"quality gate decision was {decision}")
         write_state(root, state)
         print("Quality gate failed")
@@ -1739,6 +2289,12 @@ def cmd_run_quality(args: argparse.Namespace) -> int:
     state = read_state(root)
     assert_phase(state, {"quality_gate"})
     assert_phase_prereqs(root, state, "quality_gate", workspace)
+    if not run_quality_budget_hook(root, workspace, state):
+        write_state(root, state)
+        return 1
+    if not run_scope_check_hook(root, workspace, state, "before quality/commit"):
+        write_state(root, state)
+        return 1
     script = resolve_quality_gate_script(loop_config(state))
     profile_name = loop_config(state)["quality_profile"]
     profile = quality_profile(state)
@@ -1792,6 +2348,7 @@ def cmd_record_branch(args: argparse.Namespace) -> int:
     if current_branch in PROTECTED_BRANCHES or current_branch.startswith("release/"):
         raise SystemExit(f"Refusing to use protected branch for dev loop: {current_branch}")
     state.setdefault("git", {})["branch"] = args.branch
+    state["git"]["base_commit"] = current_git_head(workspace)
     state["git"]["branch_recorded_at"] = now()
     write_state(root, state)
     print(f"Recorded branch: {args.branch}")
@@ -1806,6 +2363,9 @@ def cmd_record_commit(args: argparse.Namespace) -> int:
     assert_phase_prereqs(root, state, "quality_gate", workspace)
     if not quality_is_current(state, root, workspace):
         raise SystemExit("Cannot record a commit before quality gate passes.")
+    if not run_scope_check_hook(root, workspace, state, "before commit"):
+        write_state(root, state)
+        return 1
     if not is_git_repo(workspace):
         raise SystemExit("Cannot record a commit outside a git repository.")
     current_branch = current_git_branch(workspace)
@@ -1952,6 +2512,12 @@ def cmd_record_spec_merge(args: argparse.Namespace) -> int:
     state = read_state(root)
     assert_phase(state, {"implementation"})
     assert_no_blockers(state)
+    if not run_scope_check_hook(root, workspace, state, "before spec merge"):
+        write_state(root, state)
+        return 1
+    if not run_budget_check_hook(root, workspace, state, "before spec merge"):
+        write_state(root, state)
+        return 1
     delta = load_spec_delta(root)
     config = loop_config(state)
     spec_dir = workspace / config["spec_dir"]
@@ -2083,7 +2649,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
     except SystemExit as exc:
         findings.append(str(exc))
     if args.require_reviews:
-        roles = ["plan-reviewer"] if automation_level == "planning_only" else sorted(REVIEW_ROLES)
+        roles = required_review_roles(state, automation_level)
         for role in roles:
             if not review_is_current(state, role, root, workspace):
                 findings.append(f"Missing current passing review: {role}")
@@ -2194,7 +2760,10 @@ def hash_target_paths(workspace: Path, rel_paths: list[str]) -> str:
 
 
 def standalone_has_red(attempts: list[dict]) -> bool:
-    return any(item.get("stage") == "red" and item.get("status") == "failed" for item in attempts)
+    return any(
+        item.get("stage") == "red" and item.get("status") == "failed" and red_validation_allows_evidence(item)
+        for item in attempts
+    )
 
 
 def cmd_version(args: argparse.Namespace) -> int:
@@ -2215,6 +2784,27 @@ def parse_version_tuple(value: str) -> tuple:
         else:
             break
     return tuple(numbers)
+
+
+def cmd_scope_check(args: argparse.Namespace) -> int:
+    workspace = Path(args.workspace).resolve()
+    if not is_git_repo(workspace):
+        raise SystemExit("scope-check requires a git repository.")
+    root = Path(args.root)
+    state: dict | None = None
+    state_path = root / "loop-state.json"
+    if state_path.exists():
+        state = read_state(root)
+    plan = Path(args.plan) if args.plan else root / "development-plan.md"
+    design = Path(args.design) if args.design else root / "technical-design.md"
+    result = scope_check_result(root, workspace, state=state, plan_path=plan, design_path=design, base_ref=args.base_ref)
+    print_scope_check(result)
+    if state is not None:
+        state["scope_check"] = {**result, "context": "manual scope-check", "recorded_at": now()}
+        if result["status"] != "passed" and phase(state) != "complete":
+            add_blocker(state, "scope-check failed: " + "; ".join(result["findings"]))
+        write_state(root, state)
+    return 0 if result["status"] == "passed" else 1
 
 
 def cmd_guard_check(args: argparse.Namespace) -> int:
@@ -2243,6 +2833,15 @@ def cmd_check_spec(args: argparse.Namespace) -> int:
         )
     print(f"{path}: Goal and Acceptance Criteria are present and non-empty.")
     return 0
+
+
+def cmd_validate_red(args: argparse.Namespace) -> int:
+    validation = validate_red_failure(args.unit, Path(args.log), args.expected, status=args.status)
+    print(f"RED_TEST_VALIDATION_STATUS={validation['status']}")
+    print(f"RED_TEST_VALIDATION_REASON={validation['reason']}")
+    if validation.get("expected"):
+        print(f"RED_TEST_VALIDATION_EXPECTED={validation['expected']}")
+    return 0 if validation["status"] == "pass" else 1
 
 
 def cmd_standalone_fingerprint(args: argparse.Namespace) -> int:
@@ -2311,17 +2910,24 @@ def cmd_standalone_test(args: argparse.Namespace) -> int:
         "workspace_fingerprint": workspace_fingerprint(workspace),
         "recorded_at": now(),
     }
-    attempts.append(record)
-    save_ledger(ledger_path, ledger)
     if args.stage == "red":
+        validation = validate_red_failure(label, Path(meta["log_path"]), args.expected_failure, status=meta["status"])
+        record["red_validation"] = validation
+        attempts.append(record)
+        save_ledger(ledger_path, ledger)
         if meta["status"] == "passed":
             print(f"{label}: red-stage test PASSED before implementation; the test does not prove the missing behavior. Strengthen it.")
             return 1
         if meta["status"] != "failed":
             print(f"{label}: red-stage run ended with {meta['status']}; fix the test harness so the red run fails cleanly.")
             return 1
-        print(f"{label}: red evidence recorded ({ledger_path}).")
+        if validation["status"] != "pass":
+            print(f"{label}: red-stage failure rejected by red-test-validator ({validation['status']}): {validation['reason']}")
+            return 1
+        print(f"{label}: red evidence recorded ({ledger_path}; red-test-validator pass).")
         return 0
+    attempts.append(record)
+    save_ledger(ledger_path, ledger)
     if meta["status"] != "passed":
         print(f"{label}: green-stage run is {meta['status']}; keep iterating.")
         return 1
@@ -2358,8 +2964,9 @@ def cmd_standalone_review(args: argparse.Namespace) -> int:
     if not src.exists():
         raise SystemExit(f"Review report does not exist: {src}")
     decision = parse_decision(src)
-    if decision not in {"pass", "needs-revision", "needs-human-review", "block"}:
-        raise SystemExit(f"Review report has invalid or missing Decision: {src}")
+    if decision not in valid_review_decisions(role):
+        expected = ", ".join(sorted(valid_review_decisions(role)))
+        raise SystemExit(f"Review report has invalid or missing Decision: {src}; expected one of: {expected}")
     target_fingerprint = hash_target_paths(workspace, targets)
     validate_standalone_review(role, src, args.agent_id, target_fingerprint)
     review_dir = resolve_evidence_dir(workspace, config) / "review"
@@ -2381,7 +2988,7 @@ def cmd_standalone_review(args: argparse.Namespace) -> int:
     )
     save_ledger(ledger_path, ledger)
     print(f"{role}: {decision} (recorded to {ledger_path}).")
-    return 0 if decision == "pass" else 1
+    return 0 if review_decision_allows_progress(role, decision) else 1
 
 
 def cmd_check_spec_delta(args: argparse.Namespace) -> int:
@@ -2421,7 +3028,7 @@ def latest_green_attempt(ledger: dict) -> dict | None:
 def cmd_ship_check(args: argparse.Namespace) -> int:
     """Floor gate for dev-ship: a git repo, not on a protected branch, and a
     green test recorded against the exact tree being shipped. Standalone chains
-    stay honest — you cannot open a PR without current green evidence."""
+    stay honest 鈥?you cannot open a PR without current green evidence."""
     workspace = Path(args.workspace).resolve()
     config = load_loop_config(args.config)
     assert_no_active_loop(workspace)
@@ -2502,6 +3109,7 @@ def cmd_adopt_evidence(args: argparse.Namespace) -> int:
                         "plan_fingerprint": current_plan,
                         "workspace_fingerprint": current_workspace,
                         "recorded_at": now(),
+                        "red_validation": red.get("red_validation", {"status": "pass", "reason": "adopted legacy standalone red evidence."}),
                         "adopted_from": "standalone",
                     }
                 )
@@ -2572,6 +3180,7 @@ def build_parser() -> argparse.ArgumentParser:
     test.add_argument("--command", required=True)
     test.add_argument("--stage", choices=sorted(TEST_STAGES), default="green", help="red records failing TDD evidence; green is the pass gate.")
     test.add_argument("--timeout", type=int, default=600)
+    test.add_argument("--expected-failure", default="", help="For --stage red, text describing the intended missing behavior that should appear in the failure log.")
     test.add_argument("--test-gate-script", default="", help="Defaults to config override, companion skill, or bundled test_gate.py.")
     test.set_defaults(func=cmd_run_test)
 
@@ -2580,6 +3189,7 @@ def build_parser() -> argparse.ArgumentParser:
     record_test.add_argument("--meta", required=True, help="AUTODEV_TEST_META JSON produced by the test gate inside the worktree.")
     record_test.add_argument("--worktree", required=True, help="Linked git worktree where the unit-implementer ran the gate.")
     record_test.add_argument("--stage", choices=sorted(TEST_STAGES), default="green")
+    record_test.add_argument("--expected-failure", default="", help="For --stage red, text describing the intended missing behavior that should appear in the failure log.")
     record_test.set_defaults(func=cmd_record_test)
 
     verify = sub.add_parser("verify-units")
@@ -2632,8 +3242,21 @@ def build_parser() -> argparse.ArgumentParser:
     version.add_argument("--require", default="", help="Exit non-zero if the installed core is older than this version.")
     version.set_defaults(func=cmd_version)
 
+    scope = sub.add_parser("scope-check")
+    scope.add_argument("--plan", default="", help="development-plan.md path; defaults to <root>/development-plan.md.")
+    scope.add_argument("--design", default="", help="technical-design.md path; defaults to <root>/technical-design.md.")
+    scope.add_argument("--base-ref", default="", help="Optional git ref to include committed branch diff in the check.")
+    scope.set_defaults(func=cmd_scope_check)
+
     guard = sub.add_parser("guard-check")
     guard.set_defaults(func=cmd_guard_check)
+
+    validate_red = sub.add_parser("validate-red")
+    validate_red.add_argument("--unit", required=True)
+    validate_red.add_argument("--log", required=True, help="Red-stage test log to inspect.")
+    validate_red.add_argument("--expected", default="", help="Expected missing behavior or assertion text for the red failure.")
+    validate_red.add_argument("--status", choices=["passed", "failed", "timeout", "error"], default="failed")
+    validate_red.set_defaults(func=cmd_validate_red)
 
     check_spec = sub.add_parser("check-spec")
     check_spec.add_argument("--file", required=True, help="Spec/source file to validate for a non-empty Goal and Acceptance Criteria.")
@@ -2648,12 +3271,13 @@ def build_parser() -> argparse.ArgumentParser:
     standalone_test.add_argument("--command", required=True)
     standalone_test.add_argument("--stage", choices=sorted(TEST_STAGES), default="green")
     standalone_test.add_argument("--mode", choices=sorted(TDD_MODES), default="red", help="red enforces red-before-green; regression-only records green for changes covered by existing tests.")
+    standalone_test.add_argument("--expected-failure", default="", help="For --stage red, text describing the intended missing behavior that should appear in the failure log.")
     standalone_test.add_argument("--timeout", type=int, default=600)
     standalone_test.add_argument("--test-gate-script", default="")
     standalone_test.set_defaults(func=cmd_standalone_test)
 
     standalone_review = sub.add_parser("standalone-review")
-    standalone_review.add_argument("--role", required=True, help="One of plan-reviewer, implementation-reviewer, risk-reviewer.")
+    standalone_review.add_argument("--role", required=True, help="One of plan-reviewer, merge-integrator, implementation-reviewer, docs-impact-reviewer, risk-reviewer.")
     standalone_review.add_argument("--report", required=True)
     standalone_review.add_argument("--agent-id", required=True)
     standalone_review.add_argument("--target", required=True, help="Comma-separated workspace-relative files under review.")
@@ -2679,3 +3303,8 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+
+
+
