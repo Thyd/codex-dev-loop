@@ -1,6 +1,7 @@
 # Subagent Review Loop
 
 Use three independent Subagent roles. Give each role raw artifacts and a narrow task.
+(The `unit-implementer` role for parallel development lives in [tdd-parallel-units.md](tdd-parallel-units.md).)
 
 Do not pass your intended answer, hidden conclusions, or desired outcome. The point is cross-checking.
 
@@ -43,10 +44,13 @@ Pass only when:
 - Test plan proves acceptance criteria.
 - Risk analysis names material risks.
 - Development plan is split into independently testable units.
+- Every `- TDD: regression-only` waiver is genuinely justified (existing tests cover the change); reject waivers on new behavior.
+- The spec delta matches the goal: ADDED/MODIFIED/REMOVED requirements are complete and testable, and any `No Spec Impact` claim is true.
+- The declared task scale fits the change; flag `small` when the scope or blast radius says otherwise.
 
 ## implementation-reviewer
 
-Purpose: verify that the code diff matches the PR objective and planning artifacts.
+Purpose: verify that the code diff matches the PR objective and planning artifacts, and that spec baseline changes under `<spec_dir>/` implement exactly the reviewed spec-delta with no undeclared requirement drift.
 
 Prompt shape:
 

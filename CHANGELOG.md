@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.4.0 - 2026-07-07
+
+### Added
+
+- Clarification-first intake: `init` now starts every loop in the `intake` phase; `init --draft` starts from a skeleton `source.md` for rough ideas. `set-phase planning` is refused until Goal and Acceptance Criteria are non-empty; Q&A is recorded in the new `clarification-log.md` artifact, and `planning`/`plan_review` can backtrack to `intake` for re-clarification.
+- TDD gates inside every development unit: `run-test --stage red` records failing red evidence (excluded from the failure limit; an unexpectedly passing red run is flagged); green runs are refused without current red evidence. Units may declare `- TDD: regression-only` in the development plan for refactors covered by existing tests — the waiver sits in the plan so plan review must approve it.
+- Parallel unit development in isolated git worktrees: the new `record-test --unit --meta --worktree --stage` command records evidence produced by unit-implementer Subagents inside linked worktrees (non-worktree paths are rejected), and the new `verify-units` command re-runs every unit's green gate against the merged main tree. Worktree evidence is interim by design: its workspace fingerprint cannot satisfy the final gate.
+- Spec baseline consolidation (OpenSpec-inspired): `spec-delta.md` is a new required planning artifact (capability requirement changes or a justified `## No Spec Impact`, never both). The new `record-spec-merge` command mechanically validates that `<spec_dir>/<capability>.md` files contain every ADDED/MODIFIED `#### Requirement:` title and none of the REMOVED ones; implementation review and all later phases are blocked until the recorded merge is current. Spec updates ride the same branch, diff, reviews, and PR as the code.
+- Task-scale adaptive gates: `init --scale small|standard|large` (default from the new `default_scale` config key) plus a `set-scale` command (raising allowed anytime; lowering only during intake/planning). `small` relaxes planning-artifact content requirements and may skip the `risk_review` phase — but a hard sensitive-path guard refuses the skip whenever the change set touches dependency manifests, lockfiles, migrations, SQL, CI/CD, Docker, Terraform, keys, or auth/security/secrets paths. `large` requires every required artifact section to be filled.
+- Bundled gate fallbacks: `scripts/test_gate.py` and `scripts/quality_gate_fallback.py` speak the same evidence protocols as the companion skills, so the loop runs without `automated-dev-executor` / `ai-code-quality-gate` installed. Resolution order: home-anchored config override, companion skill, bundled fallback.
+- Claude Code adapter (`adapters/claude-code/SKILL.md`): same harness and gates, with subagents mapped to the Agent tool, `CODEX_DEV_LOOP_HOME=~/.claude`, and the bundled gate fallbacks.
+- `CODEX_DEV_LOOP_HOME` environment variable relocates the loop home (config and companion-skill paths) for non-Codex agents.
+- `archive` command (allowed at `complete`): moves the run's records to `.codex/dev-loop-archive/<timestamp>-<branch>/` so the next loop starts clean; `init` now refuses to overwrite an unarchived loop without `--force`.
+- New references: `tdd-parallel-units.md` (TDD stages, worktree orchestration, unit-implementer prompt) and `spec-baseline.md` (baseline format, delta format, merge procedure).
+
+### Changed
+
+- Config schema v2: new keys `default_scale`, `spec_dir`, `test_gate_script`, `quality_gate_script`. Schema v1 configs migrate automatically with safe defaults; the wizard still asks only five questions. Gate-script overrides are honored only from the home-anchored config file so a workspace-local `--config` cannot swap in a fake gate.
+- `spec-delta.md` joined the fingerprinted core planning artifacts: editing it after review invalidates reviews, exactly like editing the development plan.
+- Backtracking now also clears stale spec-merge state; the unit-completion gate additionally requires the latest attempt to be a green-stage pass plus red evidence (or an approved waiver).
+- The self-test now runs fully hermetic against the bundled gate fallbacks (no companion skills required) and covers intake clarification, TDD stages, worktree recording, verify-units, spec merge validation, scale guard and escalation rules, config migration, gate-script resolution priority, and archive.
+
+### Fixed
+
+- `resolve-blocker --reason` help text claimed the reason lands in `decision-log.md`; it is recorded in `blocker-resolutions.md` (writing to the decision log would invalidate the plan fingerprint as a side effect).
+- `VERSION` still said `0.2.2` in the 0.3.0 release; version markers are now aligned.
+
 ## 0.3.0 - 2026-07-06
 
 ### Added

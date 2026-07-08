@@ -2,6 +2,21 @@
 
 Use these headings for `.codex/dev-loop/` records.
 
+## clarification-log.md
+
+```markdown
+# Clarification Log
+
+## Open Questions
+
+## Answered
+
+| Question | Answer | Source | Date |
+| --- | --- | --- | --- |
+
+## Assumptions Approved By User
+```
+
 ## technical-design.md
 
 ```markdown
@@ -64,6 +79,8 @@ Use these headings for `.codex/dev-loop/` records.
 
 ## development-plan.md
 
+`- TDD:` is `red` (default, failing test required first) or `regression-only` (existing tests cover the change; justify it for plan review).
+
 ```markdown
 # Development Plan
 
@@ -73,6 +90,7 @@ Use these headings for `.codex/dev-loop/` records.
 - Scope:
 - Acceptance:
 - Test gate:
+- TDD: red
 - Dependencies:
 - Status: pending
 - Evidence:
@@ -83,9 +101,32 @@ Use these headings for `.codex/dev-loop/` records.
 - Scope:
 - Acceptance:
 - Test gate:
-- Dependencies:
+- TDD: red
+- Dependencies: dev-001
 - Status: pending
 - Evidence:
+```
+
+## spec-delta.md
+
+Declare capability requirement changes or a justified no-impact — exactly one of the two. See [spec-baseline.md](spec-baseline.md).
+
+```markdown
+# Spec Delta
+
+## Capability: <kebab-name>
+
+### ADDED Requirements
+
+#### Requirement: <title>
+
+<requirement text>
+
+### MODIFIED Requirements
+
+### REMOVED Requirements
+
+## No Spec Impact
 ```
 
 ## decision-log.md
