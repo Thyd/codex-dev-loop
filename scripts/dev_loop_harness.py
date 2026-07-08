@@ -746,11 +746,7 @@ def parse_spec_delta(text: str) -> dict:
     return {"capabilities": declared, "no_impact_reason": " ".join(no_impact_lines).strip()}
 
 
-def load_spec_delta(root: Path) -> dict:
-    path = root / "spec-delta.md"
-    if not path.exists():
-        raise SystemExit("Missing required planning artifact: spec-delta.md")
-    delta = parse_spec_delta(path.read_text(encoding="utf-8", errors="replace"))
+def validate_delta_shape(delta: dict) -> dict:
     if delta["capabilities"] and delta["no_impact_reason"]:
         raise SystemExit("spec-delta.md is ambiguous: it declares capability requirements and a No Spec Impact reason. Keep exactly one.")
     if not delta["capabilities"] and not delta["no_impact_reason"]:
@@ -759,6 +755,39 @@ def load_spec_delta(root: Path) -> dict:
             "or justify the change under '## No Spec Impact'."
         )
     return delta
+
+
+def load_spec_delta(root: Path) -> dict:
+    path = root / "spec-delta.md"
+    if not path.exists():
+        raise SystemExit("Missing required planning artifact: spec-delta.md")
+    return validate_delta_shape(parse_spec_delta(path.read_text(encoding="utf-8", errors="replace")))
+
+
+def spec_delta_baseline_problems(delta: dict, spec_dir: Path) -> tuple[list[str], dict]:
+    """Mechanically compare a parsed spec delta against the baseline files.
+
+    Shared by the loop's record-spec-merge and the standalone check-spec-delta:
+    every ADDED/MODIFIED requirement title must be present in
+    <spec_dir>/<capability>.md, every REMOVED title must be gone.
+    """
+    problems: list[str] = []
+    merged: dict[str, dict[str, list[str]]] = {}
+    for capability, buckets in delta["capabilities"].items():
+        assert_safe_capability_name(capability)
+        spec_path = spec_dir / f"{capability}.md"
+        if not spec_path.exists():
+            problems.append(f"Missing spec baseline file for capability {capability!r}: {spec_path}")
+            continue
+        text = spec_path.read_text(encoding="utf-8", errors="replace").lower()
+        for title in [*buckets["added"], *buckets["modified"]]:
+            if f"#### requirement: {title.lower()}" not in text:
+                problems.append(f"{spec_path.name} is missing '#### Requirement: {title}' declared in the spec delta.")
+        for title in buckets["removed"]:
+            if f"#### requirement: {title.lower()}" in text:
+                problems.append(f"{spec_path.name} still contains removed requirement '#### Requirement: {title}'.")
+        merged[capability] = buckets
+    return problems, merged
 
 
 ARTIFACT_SECTION_REQUIREMENTS = {
@@ -1938,22 +1967,7 @@ def cmd_record_spec_merge(args: argparse.Namespace) -> int:
         write_state(root, state)
         print("Spec merge recorded: no spec impact (reason kept in spec-delta.md).")
         return 0
-    problems: list[str] = []
-    merged: dict[str, dict[str, list[str]]] = {}
-    for capability, buckets in delta["capabilities"].items():
-        assert_safe_capability_name(capability)
-        spec_path = spec_dir / f"{capability}.md"
-        if not spec_path.exists():
-            problems.append(f"Missing spec baseline file for capability {capability!r}: {spec_path}")
-            continue
-        text = spec_path.read_text(encoding="utf-8", errors="replace").lower()
-        for title in [*buckets["added"], *buckets["modified"]]:
-            if f"#### requirement: {title.lower()}" not in text:
-                problems.append(f"{spec_path.name} is missing '#### Requirement: {title}' declared in spec-delta.md.")
-        for title in buckets["removed"]:
-            if f"#### requirement: {title.lower()}" in text:
-                problems.append(f"{spec_path.name} still contains removed requirement '#### Requirement: {title}'.")
-        merged[capability] = buckets
+    problems, merged = spec_delta_baseline_problems(delta, spec_dir)
     if problems:
         raise SystemExit("Spec baseline does not match spec-delta.md:\n- " + "\n- ".join(problems))
     record = {
@@ -2249,13 +2263,23 @@ def cmd_standalone_test(args: argparse.Namespace) -> int:
     label = args.label.strip()
     if not label:
         raise SystemExit("Pass a non-empty --label to identify the behavior under test.")
+    mode = args.mode
+    if mode not in TDD_MODES:
+        raise SystemExit(f"Unknown --mode {mode!r}; use red or regression-only.")
     ledger_path = resolve_evidence_dir(workspace, config) / "tdd" / "ledger.json"
     ledger = load_ledger(ledger_path, "tdd")
     attempts = ledger["attempts"].setdefault(label, [])
-    if args.stage == "green" and not standalone_has_red(attempts):
+    # regression-only mirrors the loop's per-unit waiver: a change already
+    # covered by existing tests (or a non-behavioral ship) records green
+    # without a red run. Recorded honestly so the evidence shows which
+    # discipline was used. The red stage is meaningless under this mode.
+    if mode == "regression-only" and args.stage == "red":
+        raise SystemExit("--mode regression-only has no red stage; run --stage green.")
+    if mode == "red" and args.stage == "green" and not standalone_has_red(attempts):
         raise SystemExit(
             f"Green stage refused for {label!r}: no prior failing red run. "
-            "Run --stage red against the new failing test before implementing."
+            "Run --stage red against the new failing test first, or use --mode regression-only "
+            "if existing tests already cover the change."
         )
     script = resolve_test_gate_script(config, args.test_gate_script)
     command = [
@@ -2278,6 +2302,7 @@ def cmd_standalone_test(args: argparse.Namespace) -> int:
     meta = load_test_meta(Path(meta_path), label, workspace)
     record = {
         "stage": args.stage,
+        "mode": mode,
         "status": meta["status"],
         "command": meta["command"],
         "exit_code": meta.get("exit_code"),
@@ -2357,6 +2382,73 @@ def cmd_standalone_review(args: argparse.Namespace) -> int:
     save_ledger(ledger_path, ledger)
     print(f"{role}: {decision} (recorded to {ledger_path}).")
     return 0 if decision == "pass" else 1
+
+
+def cmd_check_spec_delta(args: argparse.Namespace) -> int:
+    """Standalone spec-delta validation (dev-spec). Same mechanical check as the
+    loop's record-spec-merge, but on a given delta file and spec dir, with no
+    loop state. Used both after a merge edit and after bootstrap."""
+    workspace = Path(args.workspace).resolve()
+    delta_path = Path(args.delta)
+    if not delta_path.exists():
+        raise SystemExit(f"Spec delta file does not exist: {delta_path}")
+    delta = validate_delta_shape(parse_spec_delta(delta_path.read_text(encoding="utf-8", errors="replace")))
+    if delta["no_impact_reason"]:
+        print("Spec delta declares no spec impact; nothing to reconcile against the baseline.")
+        return 0
+    spec_dir = workspace / args.spec_dir
+    problems, merged = spec_delta_baseline_problems(delta, spec_dir)
+    if problems:
+        print("Spec baseline does not match the spec delta:")
+        for problem in problems:
+            print(f"- {problem}")
+        return 1
+    total = sum(len(b["added"]) + len(b["modified"]) + len(b["removed"]) for b in merged.values())
+    print(f"Spec baseline matches the delta: {total} requirement change(s) across {len(merged)} capability file(s) in {args.spec_dir}/.")
+    return 0
+
+
+def latest_green_attempt(ledger: dict) -> dict | None:
+    latest: dict | None = None
+    for attempts in ledger.get("attempts", {}).values():
+        for item in attempts:
+            if item.get("stage") == "green" and item.get("status") == "passed":
+                if latest is None or item.get("recorded_at", "") > latest.get("recorded_at", ""):
+                    latest = item
+    return latest
+
+
+def cmd_ship_check(args: argparse.Namespace) -> int:
+    """Floor gate for dev-ship: a git repo, not on a protected branch, and a
+    green test recorded against the exact tree being shipped. Standalone chains
+    stay honest — you cannot open a PR without current green evidence."""
+    workspace = Path(args.workspace).resolve()
+    config = load_loop_config(args.config)
+    assert_no_active_loop(workspace)
+    if not is_git_repo(workspace):
+        raise SystemExit("ship-check requires a git repository.")
+    branch = current_git_branch(workspace)
+    if not branch:
+        raise SystemExit("ship-check requires a named branch (detached HEAD is not shippable).")
+    if branch in PROTECTED_BRANCHES or branch.startswith("release/"):
+        raise SystemExit(f"Refusing to ship from a protected branch: {branch}. Create a feature branch first.")
+    ledger_path = resolve_evidence_dir(workspace, config) / "tdd" / "ledger.json"
+    if not ledger_path.exists():
+        raise SystemExit(
+            "No test evidence found. Record at least one green run with standalone-test "
+            "(TDD or --mode regression-only) before shipping."
+        )
+    ledger = load_ledger(ledger_path, "tdd")
+    green = latest_green_attempt(ledger)
+    if green is None:
+        raise SystemExit("No green test evidence in the ledger. Record a green standalone-test run before shipping.")
+    if green.get("workspace_fingerprint") != workspace_fingerprint(workspace):
+        raise SystemExit(
+            "The working tree changed since the last green test. Re-run standalone-test green "
+            "against the current tree so the PR ships on verified-green evidence."
+        )
+    print(f"ship-check passed on branch {branch}: green evidence is current for the shipping tree.")
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -2479,6 +2571,7 @@ def build_parser() -> argparse.ArgumentParser:
     standalone_test.add_argument("--label", required=True, help="Identifier for the behavior under test.")
     standalone_test.add_argument("--command", required=True)
     standalone_test.add_argument("--stage", choices=sorted(TEST_STAGES), default="green")
+    standalone_test.add_argument("--mode", choices=sorted(TDD_MODES), default="red", help="red enforces red-before-green; regression-only records green for changes covered by existing tests.")
     standalone_test.add_argument("--timeout", type=int, default=600)
     standalone_test.add_argument("--test-gate-script", default="")
     standalone_test.set_defaults(func=cmd_standalone_test)
@@ -2489,6 +2582,14 @@ def build_parser() -> argparse.ArgumentParser:
     standalone_review.add_argument("--agent-id", required=True)
     standalone_review.add_argument("--target", required=True, help="Comma-separated workspace-relative files under review.")
     standalone_review.set_defaults(func=cmd_standalone_review)
+
+    check_delta = sub.add_parser("check-spec-delta")
+    check_delta.add_argument("--delta", required=True, help="Spec delta file to validate against the baseline.")
+    check_delta.add_argument("--spec-dir", default="specs", help="Baseline spec directory, relative to the workspace.")
+    check_delta.set_defaults(func=cmd_check_spec_delta)
+
+    ship = sub.add_parser("ship-check")
+    ship.set_defaults(func=cmd_ship_check)
     return parser
 
 

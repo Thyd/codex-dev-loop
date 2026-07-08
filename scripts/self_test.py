@@ -1654,6 +1654,99 @@ def standalone_tests() -> int:
             print("Expected standalone commands to resume once the loop is complete.")
             return 1
 
+    if standalone_ship_and_spec_tests() != 0:
+        return 1
+
+    return 0
+
+
+def standalone_ship_and_spec_tests() -> int:
+    """P2 composable commands: regression-only TDD mode, ship-check floor gate,
+    and standalone check-spec-delta."""
+    harness = Path(__file__).with_name("dev_loop_harness.py").resolve()
+
+    with tempfile.TemporaryDirectory(prefix="codex-dev-loop-ship-") as raw_tmp:
+        tmp = Path(raw_tmp)
+        workspace = tmp / "repo"
+        workspace.mkdir()
+        init_git_repo(workspace)  # leaves HEAD on branch "codex/test"
+
+        # ship-check with no green evidence is refused.
+        no_evidence = standalone(harness, workspace, "ship-check")
+        if no_evidence.returncode == 0:
+            print(no_evidence.stdout)
+            print("Expected ship-check to refuse without any green test evidence.")
+            return 1
+
+        # regression-only green needs no prior red.
+        reg = standalone(harness, workspace, "standalone-test", "--label", "ship", "--mode", "regression-only", "--stage", "green", "--command", pass_command())
+        if reg.returncode != 0:
+            print(reg.stdout)
+            print("Expected regression-only green to record without a red run.")
+            return 1
+        reg_red = standalone(harness, workspace, "standalone-test", "--label", "ship", "--mode", "regression-only", "--stage", "red", "--command", fail_command())
+        if reg_red.returncode == 0:
+            print(reg_red.stdout)
+            print("Expected regression-only mode to reject a red stage.")
+            return 1
+
+        # ship-check now passes on the current tree.
+        ok_ship = standalone(harness, workspace, "ship-check")
+        if ok_ship.returncode != 0:
+            print(ok_ship.stdout)
+            print("Expected ship-check to pass with current green evidence on a feature branch.")
+            return 1
+
+        # changing the tree invalidates the green evidence.
+        (workspace / "app.txt").write_text("shipped change\n", encoding="utf-8")
+        stale_ship = standalone(harness, workspace, "ship-check")
+        if stale_ship.returncode == 0:
+            print(stale_ship.stdout)
+            print("Expected ship-check to go stale after the working tree changed.")
+            return 1
+
+        # protected branch is refused.
+        must(["git", "add", "-A"], workspace)
+        must(["git", "commit", "-m", "wip"], workspace)
+        must(["git", "checkout", "master"], workspace)
+        protected = standalone(harness, workspace, "ship-check")
+        if protected.returncode == 0:
+            print(protected.stdout)
+            print("Expected ship-check to refuse a protected branch.")
+            return 1
+
+    with tempfile.TemporaryDirectory(prefix="codex-dev-loop-checkdelta-") as raw_tmp:
+        tmp = Path(raw_tmp)
+        workspace = tmp / "repo"
+        workspace.mkdir()
+        init_git_repo(workspace)
+        (workspace / "specs").mkdir()
+        delta = workspace / "spec-delta.md"
+        delta.write_text(
+            "# Spec Delta\n\n## Capability: app-core\n\n### ADDED Requirements\n\n#### Requirement: Stores flag\n\nThe app records the flag.\n",
+            encoding="utf-8",
+        )
+        missing_baseline = standalone(harness, workspace, "check-spec-delta", "--delta", str(delta), "--spec-dir", "specs")
+        if missing_baseline.returncode == 0:
+            print(missing_baseline.stdout)
+            print("Expected check-spec-delta to fail while the baseline file is missing.")
+            return 1
+        (workspace / "specs" / "app-core.md").write_text(
+            "# app-core Specification\n\n#### Requirement: Stores flag\n\nThe app records the flag.\n", encoding="utf-8"
+        )
+        matched = standalone(harness, workspace, "check-spec-delta", "--delta", str(delta), "--spec-dir", "specs")
+        if matched.returncode != 0:
+            print(matched.stdout)
+            print("Expected check-spec-delta to pass once the baseline contains the requirement.")
+            return 1
+        no_impact = workspace / "delta2.md"
+        no_impact.write_text("# Spec Delta\n\n## No Spec Impact\n\nDocs only.\n", encoding="utf-8")
+        ni = standalone(harness, workspace, "check-spec-delta", "--delta", str(no_impact), "--spec-dir", "specs")
+        if ni.returncode != 0:
+            print(ni.stdout)
+            print("Expected a No Spec Impact delta to pass check-spec-delta.")
+            return 1
+
     return 0
 
 

@@ -195,13 +195,17 @@
 | 阶段 | 内容 | 特点 | 状态 |
 |---|---|---|---|
 | **P1** | harness 加 standalone 模式 + `guard-check` + `check-spec`；抽出三个最高频子 skill：**dev-tdd、dev-review、dev-clarify** | 纯增量，不动现有 loop；先验证「薄皮 + core」模式，只放三个技能便于把触发边界调准 | ✅ 已完成（2026-07-07） |
-| **P2** | **dev-ship、dev-spec（含 bootstrap）、dev-plan** + `references/routing.md` | bootstrap 是唯一的全新功能点 | 待开始 |
+| **P2** | **dev-ship、dev-spec（含 bootstrap）、dev-plan** + `references/routing.md` | bootstrap 是唯一的全新功能点 | ✅ 已完成（2026-07-07） |
 | **P3** | 编排器 SKILL.md 重写为组合调用；`adopt-evidence` 证据吸收；self_test 覆盖 standalone 与升链 | 收口，单体 → 组合的正式切换 | 待开始 |
 | **P4（可选）** | 借鉴 Superpowers 新增 systematic-debugging（loop 之外的独立方法论技能）；`install_skills.py` | 生态扩展 | 待开始 |
 
 ### P1 落地记录（2026-07-07）
 
 harness core 新增命令：`version`（`--require` 版本握手，`CORE_VERSION=0.5.0-dev`）、`guard-check`（暴露 `sensitive_changed_paths()`）、`check-spec`（Goal/AC 校验，dev-clarify 用）、`standalone-fingerprint`、`standalone-test`（红绿证据，红先于绿；证据落 `<evidence_dir>/tdd/ledger.json`）、`standalone-review`（绑定 target 指纹，被审文件改动即失效；落 `<evidence_dir>/review/`）。config schema 加 `evidence_dir`（空=auto，Codex 用 `.codex/evidence/`）。单一事实源守卫 `assert_no_active_loop()`：`.codex/dev-loop/loop-state.json` 存在且 phase≠complete 时拒绝所有 standalone 写入命令（guard-check/check-spec 只读，不受限）。loop 状态机代码零改动。子 skill：`skills/dev-clarify`、`skills/dev-tdd`、`skills/dev-review`（薄皮，仅调用 harness 命令，无独立闸门逻辑）。self_test 扩展覆盖以上全部，全绿。
+
+### P2 落地记录（2026-07-07）
+
+harness core 新增：`standalone-test --mode red|regression-only`（regression-only 记录绿而不要求红，对应 loop 的 regression-only 单元豁免，证据如实标注 mode）；`ship-check`（dev-ship 底线闸门：git 仓库 + 非保护分支 + TDD ledger 有针对**当前树**的绿证据，指纹匹配才放行）；`check-spec-delta`（standalone 规格 delta 校验，与 loop 的 `record-spec-merge` 共用抽出的 `spec_delta_baseline_problems()`）。子 skill：`skills/dev-plan`（复用 `validate_dev_loop_artifacts.py` 独立校验，无新 harness 逻辑）、`skills/dev-spec`（bootstrap 引导 + delta + check-spec-delta）、`skills/dev-ship`（ship-check + git/gh 交付）。新增 `references/routing.md`（决策树 + tripwire + 底线闸门集 + 单一事实源，所有 skill 共享）。self_test 扩展覆盖 regression-only、ship-check 四态、check-spec-delta 三态，全绿。
 
 **每个阶段的完成标准**：`python scripts/self_test.py` 全绿；`codex-dev-loop-0.x.0-changes.patch` 能干净地打在上一版 zip 上并复跑 self_test 通过（沿用 0.4.0 的交付验证流程）。
 
