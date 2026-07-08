@@ -94,6 +94,14 @@ def default_quality_gate_script() -> Path:
 BUNDLED_TEST_GATE_SCRIPT = Path(__file__).resolve().parent / "test_gate.py"
 BUNDLED_QUALITY_GATE_SCRIPT = Path(__file__).resolve().parent / "quality_gate_fallback.py"
 TEST_MODE_ENV = "CODEX_DEV_LOOP_TEST_MODE"
+# Harness core version for the composable sub-skills (dev-tdd, dev-review, ...).
+# Sub-skills declare a minimum and can verify it with `version --require`.
+CORE_VERSION = "0.5.0-dev"
+# Standalone evidence lives inside the workspace so it stays visible to git and
+# reviewers, exactly like loop evidence. The canonical loop dir is what the
+# single-source-of-truth guard watches for an in-flight loop.
+DEFAULT_EVIDENCE_DIRNAME = ".codex/evidence"
+CANONICAL_LOOP_DIR = ".codex/dev-loop"
 CONFIG_SCHEMA_VERSION = 2
 DEFAULT_CONFIG = {
     "schema_version": CONFIG_SCHEMA_VERSION,
@@ -106,6 +114,7 @@ DEFAULT_CONFIG = {
     "spec_dir": "specs",
     "test_gate_script": "",
     "quality_gate_script": "",
+    "evidence_dir": "",
 }
 QUALITY_PROFILES = {
     "light": {
@@ -236,6 +245,10 @@ def normalize_config(raw: object) -> dict:
     for key in ("test_gate_script", "quality_gate_script"):
         if not isinstance(config.get(key), str):
             raise SystemExit(f"{key} in codex-dev-loop config must be a string path or empty.")
+    evidence_dir = str(config.get("evidence_dir") or "").strip().replace("\\", "/")
+    if evidence_dir and (evidence_dir.startswith("/") or evidence_dir.startswith("~") or ":" in evidence_dir or ".." in evidence_dir.split("/")):
+        raise SystemExit(f"evidence_dir in codex-dev-loop config must be empty or a relative path inside the repository: {config.get('evidence_dir')!r}")
+    config["evidence_dir"] = evidence_dir
     # Schema v1 configs are accepted as-is: every v2 key falls back to its
     # default above, so first-run users never have to re-answer the wizard.
     config["schema_version"] = CONFIG_SCHEMA_VERSION
@@ -2093,6 +2106,259 @@ def cmd_validate(args: argparse.Namespace) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# Composable standalone mode (dev-tdd, dev-review, dev-clarify sub-skills)
+#
+# The state machine above is the source of truth for a full loop. Standalone
+# commands let a single stage run on its own for small tasks, writing the same
+# evidence format to a separate ledger so they never touch loop-state.json.
+# The single-source-of-truth guard forbids standalone use while a loop is live.
+# ---------------------------------------------------------------------------
+
+
+def host_is_codex() -> bool:
+    return not os.environ.get(HOME_ENV, "").strip()
+
+
+def resolve_evidence_dir(workspace: Path, config: dict) -> Path:
+    configured = (config.get("evidence_dir") or "").strip()
+    if configured:
+        return workspace / configured
+    return workspace / DEFAULT_EVIDENCE_DIRNAME
+
+
+def active_loop_state_path(workspace: Path) -> Path:
+    return workspace / CANONICAL_LOOP_DIR / "loop-state.json"
+
+
+def assert_no_active_loop(workspace: Path) -> None:
+    path = active_loop_state_path(workspace)
+    if not path.exists():
+        return
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        state = {}
+    current = state.get("phase", "")
+    if current and current != "complete":
+        raise SystemExit(
+            f"An active dev loop exists at {path.parent} (phase: {current}). "
+            "Standalone skills are disabled while a loop runs so evidence cannot fork; "
+            "use the loop's own commands, or finish and archive the loop first."
+        )
+
+
+def load_ledger(path: Path, kind: str) -> dict:
+    if not path.exists():
+        return {"core_version": CORE_VERSION, "kind": kind, "attempts": {}, "reviews": []}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"Evidence ledger is not valid JSON: {path}: {exc}") from exc
+    data.setdefault("attempts", {})
+    data.setdefault("reviews", [])
+    return data
+
+
+def save_ledger(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data["core_version"] = CORE_VERSION
+    data["updated_at"] = now()
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def hash_target_paths(workspace: Path, rel_paths: list[str]) -> str:
+    digest = hashlib.sha256()
+    for rel in rel_paths:
+        normalized = rel.replace("\\", "/")
+        digest.update(normalized.encode("utf-8"))
+        path = workspace / normalized
+        digest.update(path.read_bytes() if path.is_file() else b"<missing>")
+    return digest.hexdigest()
+
+
+def standalone_has_red(attempts: list[dict]) -> bool:
+    return any(item.get("stage") == "red" and item.get("status") == "failed" for item in attempts)
+
+
+def cmd_version(args: argparse.Namespace) -> int:
+    print(f"codex-dev-loop-core {CORE_VERSION}")
+    if args.require:
+        installed = parse_version_tuple(CORE_VERSION)
+        required = parse_version_tuple(args.require)
+        if installed < required:
+            raise SystemExit(f"Installed core {CORE_VERSION} is older than required {args.require}.")
+    return 0
+
+
+def parse_version_tuple(value: str) -> tuple:
+    numbers = []
+    for part in value.split("-", 1)[0].split("."):
+        if part.isdigit():
+            numbers.append(int(part))
+        else:
+            break
+    return tuple(numbers)
+
+
+def cmd_guard_check(args: argparse.Namespace) -> int:
+    workspace = Path(args.workspace).resolve()
+    if not is_git_repo(workspace):
+        raise SystemExit("guard-check requires a git repository.")
+    sensitive = sensitive_changed_paths(workspace)
+    if sensitive:
+        print("Sensitive paths in the current change set (escalate beyond a micro/small chain):")
+        for path in sorted(sensitive):
+            print(f"- {path}")
+        return 1
+    print("No sensitive paths in the current change set.")
+    return 0
+
+
+def cmd_check_spec(args: argparse.Namespace) -> int:
+    path = Path(args.file)
+    if not path.exists():
+        raise SystemExit(f"Spec file does not exist: {path}")
+    text = path.read_text(encoding="utf-8", errors="replace")
+    if not section_has_content(text, "## Goal") or not section_has_content(text, "## Acceptance Criteria"):
+        raise SystemExit(
+            f"{path} must contain non-empty '## Goal' and '## Acceptance Criteria' sections. "
+            "Keep clarifying with the user (record Q&A in a clarification log) until both are concrete."
+        )
+    print(f"{path}: Goal and Acceptance Criteria are present and non-empty.")
+    return 0
+
+
+def cmd_standalone_fingerprint(args: argparse.Namespace) -> int:
+    workspace = Path(args.workspace).resolve()
+    targets = split_csv(args.target)
+    if not targets:
+        raise SystemExit("Pass --target as a comma-separated list of workspace-relative files.")
+    print(f"TARGET_FINGERPRINT={hash_target_paths(workspace, targets)}")
+    return 0
+
+
+def cmd_standalone_test(args: argparse.Namespace) -> int:
+    workspace = Path(args.workspace).resolve()
+    config = load_loop_config(args.config)
+    assert_no_active_loop(workspace)
+    if args.stage not in TEST_STAGES:
+        raise SystemExit(f"Unknown test stage: {args.stage!r}; use red or green.")
+    label = args.label.strip()
+    if not label:
+        raise SystemExit("Pass a non-empty --label to identify the behavior under test.")
+    ledger_path = resolve_evidence_dir(workspace, config) / "tdd" / "ledger.json"
+    ledger = load_ledger(ledger_path, "tdd")
+    attempts = ledger["attempts"].setdefault(label, [])
+    if args.stage == "green" and not standalone_has_red(attempts):
+        raise SystemExit(
+            f"Green stage refused for {label!r}: no prior failing red run. "
+            "Run --stage red against the new failing test before implementing."
+        )
+    script = resolve_test_gate_script(config, args.test_gate_script)
+    command = [
+        sys.executable,
+        str(script),
+        "--unit",
+        label,
+        "--command",
+        args.command,
+        "--cwd",
+        str(workspace),
+        "--timeout",
+        str(args.timeout),
+    ]
+    result = run_child(command, workspace)
+    print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
+    meta_path = parse_key_value_output(result.stdout, "AUTODEV_TEST_META")
+    if not meta_path:
+        raise SystemExit("Test gate did not report AUTODEV_TEST_META.")
+    meta = load_test_meta(Path(meta_path), label, workspace)
+    record = {
+        "stage": args.stage,
+        "status": meta["status"],
+        "command": meta["command"],
+        "exit_code": meta.get("exit_code"),
+        "log": meta["log_path"],
+        "meta": str(meta_path),
+        "workspace_fingerprint": workspace_fingerprint(workspace),
+        "recorded_at": now(),
+    }
+    attempts.append(record)
+    save_ledger(ledger_path, ledger)
+    if args.stage == "red":
+        if meta["status"] == "passed":
+            print(f"{label}: red-stage test PASSED before implementation; the test does not prove the missing behavior. Strengthen it.")
+            return 1
+        if meta["status"] != "failed":
+            print(f"{label}: red-stage run ended with {meta['status']}; fix the test harness so the red run fails cleanly.")
+            return 1
+        print(f"{label}: red evidence recorded ({ledger_path}).")
+        return 0
+    if meta["status"] != "passed":
+        print(f"{label}: green-stage run is {meta['status']}; keep iterating.")
+        return 1
+    print(f"{label}: green pass recorded ({ledger_path}).")
+    return 0
+
+
+def validate_standalone_review(role: str, report: Path, agent_id: str, target_fingerprint: str) -> None:
+    text = report.read_text(encoding="utf-8", errors="replace")
+    missing = [section for section in REVIEW_SECTIONS[role] if section.lower() not in text.lower()]
+    if missing:
+        raise SystemExit(f"{role} report is missing required sections: {', '.join(missing)}")
+    if parse_report_field(text, "Agent ID:") != agent_id:
+        raise SystemExit(f"{role} report Agent ID does not match --agent-id.")
+    if parse_report_field(text, "Target Fingerprint:") != target_fingerprint:
+        raise SystemExit(
+            f"{role} report Target Fingerprint is stale or missing; it must echo the current TARGET_FINGERPRINT "
+            "(get it from `standalone-fingerprint --target ...`)."
+        )
+
+
+def cmd_standalone_review(args: argparse.Namespace) -> int:
+    workspace = Path(args.workspace).resolve()
+    config = load_loop_config(args.config)
+    assert_no_active_loop(workspace)
+    role = args.role
+    if role not in REVIEW_ROLES:
+        raise SystemExit(f"Unknown review role: {role}")
+    validate_agent_id(args.agent_id)
+    targets = split_csv(args.target)
+    if not targets:
+        raise SystemExit("Pass --target as a comma-separated list of workspace-relative files under review.")
+    src = Path(args.report)
+    if not src.exists():
+        raise SystemExit(f"Review report does not exist: {src}")
+    decision = parse_decision(src)
+    if decision not in {"pass", "needs-revision", "needs-human-review", "block"}:
+        raise SystemExit(f"Review report has invalid or missing Decision: {src}")
+    target_fingerprint = hash_target_paths(workspace, targets)
+    validate_standalone_review(role, src, args.agent_id, target_fingerprint)
+    review_dir = resolve_evidence_dir(workspace, config) / "review"
+    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    dest = review_dir / f"{role}-{stamp}.md"
+    copy_report(src, dest)
+    ledger_path = review_dir / "ledger.json"
+    ledger = load_ledger(ledger_path, "review")
+    ledger["reviews"].append(
+        {
+            "role": role,
+            "decision": decision,
+            "targets": targets,
+            "target_fingerprint": target_fingerprint,
+            "agent_id": args.agent_id,
+            "report": str(dest),
+            "recorded_at": now(),
+        }
+    )
+    save_ledger(ledger_path, ledger)
+    print(f"{role}: {decision} (recorded to {ledger_path}).")
+    return 0 if decision == "pass" else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Codex dev loop state helper.")
     parser.add_argument("--root", default=".codex/dev-loop")
@@ -2192,6 +2458,37 @@ def build_parser() -> argparse.ArgumentParser:
     validate.add_argument("--require-reviews", action="store_true")
     validate.add_argument("--require-final", action="store_true")
     validate.set_defaults(func=cmd_validate)
+
+    # Composable standalone commands (used by the dev-* sub-skills).
+    version = sub.add_parser("version")
+    version.add_argument("--require", default="", help="Exit non-zero if the installed core is older than this version.")
+    version.set_defaults(func=cmd_version)
+
+    guard = sub.add_parser("guard-check")
+    guard.set_defaults(func=cmd_guard_check)
+
+    check_spec = sub.add_parser("check-spec")
+    check_spec.add_argument("--file", required=True, help="Spec/source file to validate for a non-empty Goal and Acceptance Criteria.")
+    check_spec.set_defaults(func=cmd_check_spec)
+
+    standalone_fp = sub.add_parser("standalone-fingerprint")
+    standalone_fp.add_argument("--target", required=True, help="Comma-separated workspace-relative files to fingerprint.")
+    standalone_fp.set_defaults(func=cmd_standalone_fingerprint)
+
+    standalone_test = sub.add_parser("standalone-test")
+    standalone_test.add_argument("--label", required=True, help="Identifier for the behavior under test.")
+    standalone_test.add_argument("--command", required=True)
+    standalone_test.add_argument("--stage", choices=sorted(TEST_STAGES), default="green")
+    standalone_test.add_argument("--timeout", type=int, default=600)
+    standalone_test.add_argument("--test-gate-script", default="")
+    standalone_test.set_defaults(func=cmd_standalone_test)
+
+    standalone_review = sub.add_parser("standalone-review")
+    standalone_review.add_argument("--role", required=True, help="One of plan-reviewer, implementation-reviewer, risk-reviewer.")
+    standalone_review.add_argument("--report", required=True)
+    standalone_review.add_argument("--agent-id", required=True)
+    standalone_review.add_argument("--target", required=True, help="Comma-separated workspace-relative files under review.")
+    standalone_review.set_defaults(func=cmd_standalone_review)
     return parser
 
 

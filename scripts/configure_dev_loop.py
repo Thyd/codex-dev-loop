@@ -28,6 +28,7 @@ ADVANCED_DEFAULTS = {
     "spec_dir": "specs",
     "test_gate_script": "",
     "quality_gate_script": "",
+    "evidence_dir": "",
 }
 
 QUESTIONS = {

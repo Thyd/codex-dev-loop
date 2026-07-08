@@ -1507,7 +1507,153 @@ def main() -> int:
             print("Expected backtrack to clear stale test evidence before implementation review.")
             return 1
 
+    if standalone_tests() != 0:
+        return 1
+
     print("codex-dev-loop self-test passed")
+    return 0
+
+
+def standalone(harness: Path, workspace: Path, *args: str, env: dict | None = None) -> subprocess.CompletedProcess:
+    return run([sys.executable, str(harness), "--workspace", str(workspace), *args], env=env)
+
+
+def standalone_tests() -> int:
+    """P1 composable standalone mode: guard-check, check-spec, standalone TDD,
+    standalone review, the single-source-of-truth guard, and version handshake."""
+    harness = Path(__file__).with_name("dev_loop_harness.py").resolve()
+
+    with tempfile.TemporaryDirectory(prefix="codex-dev-loop-standalone-") as raw_tmp:
+        tmp = Path(raw_tmp)
+        workspace = tmp / "repo"
+        workspace.mkdir()
+        init_git_repo(workspace)
+
+        # version handshake
+        ok_version = standalone(harness, workspace, "version", "--require", "0.5.0")
+        if ok_version.returncode != 0:
+            print(ok_version.stdout)
+            print("Expected the installed core to satisfy a 0.5.0 requirement.")
+            return 1
+        too_new = standalone(harness, workspace, "version", "--require", "99.0.0")
+        if too_new.returncode == 0:
+            print(too_new.stdout)
+            print("Expected version --require to reject an impossible future version.")
+            return 1
+
+        # guard-check clean vs sensitive
+        clean_guard = standalone(harness, workspace, "guard-check")
+        if clean_guard.returncode != 0:
+            print(clean_guard.stdout)
+            print("Expected guard-check to pass on a non-sensitive change set.")
+            return 1
+        (workspace / "package.json").write_text("{}\n", encoding="utf-8")
+        dirty_guard = standalone(harness, workspace, "guard-check")
+        if dirty_guard.returncode == 0:
+            print(dirty_guard.stdout)
+            print("Expected guard-check to flag a dependency manifest change.")
+            return 1
+        (workspace / "package.json").unlink()
+
+        # check-spec fail then pass
+        spec = workspace / "spec.md"
+        spec.write_text("# Spec\n\n## Goal\n\n## Acceptance Criteria\n", encoding="utf-8")
+        empty_spec = standalone(harness, workspace, "check-spec", "--file", str(spec))
+        if empty_spec.returncode == 0:
+            print(empty_spec.stdout)
+            print("Expected check-spec to reject empty Goal/Acceptance Criteria.")
+            return 1
+        spec.write_text(SOURCE, encoding="utf-8")
+        good_spec = standalone(harness, workspace, "check-spec", "--file", str(spec))
+        if good_spec.returncode != 0:
+            print(good_spec.stdout)
+            print("Expected check-spec to accept a filled-in spec.")
+            return 1
+
+        # standalone TDD: green refused without red, then red -> green
+        green_first = standalone(harness, workspace, "standalone-test", "--label", "feat", "--stage", "green", "--command", pass_command())
+        if green_first.returncode == 0:
+            print(green_first.stdout)
+            print("Expected standalone green stage to be refused before red evidence exists.")
+            return 1
+        red = standalone(harness, workspace, "standalone-test", "--label", "feat", "--stage", "red", "--command", fail_command())
+        if red.returncode != 0:
+            print(red.stdout)
+            print("Expected a failing standalone red run to record evidence.")
+            return 1
+        red_that_passes = standalone(harness, workspace, "standalone-test", "--label", "other", "--stage", "red", "--command", pass_command())
+        if red_that_passes.returncode == 0:
+            print(red_that_passes.stdout)
+            print("Expected a passing red run to be flagged as not proving the behavior.")
+            return 1
+        green = standalone(harness, workspace, "standalone-test", "--label", "feat", "--stage", "green", "--command", pass_command())
+        if green.returncode != 0:
+            print(green.stdout)
+            print("Expected standalone green stage to pass after red evidence exists.")
+            return 1
+        ledger = json.loads((workspace / ".codex" / "evidence" / "tdd" / "ledger.json").read_text(encoding="utf-8"))
+        if [item["stage"] for item in ledger["attempts"]["feat"]] != ["red", "green"]:
+            print(json.dumps(ledger, indent=2))
+            print("Expected the tdd ledger to record red then green for the label.")
+            return 1
+
+        # standalone review bound to a target fingerprint
+        (workspace / "target.txt").write_text("v1\n", encoding="utf-8")
+        fp_out = standalone(harness, workspace, "standalone-fingerprint", "--target", "target.txt")
+        fingerprint = ""
+        for line in fp_out.stdout.splitlines():
+            if line.strip().startswith("TARGET_FINGERPRINT="):
+                fingerprint = line.strip().split("=", 1)[1]
+        if not fingerprint:
+            print(fp_out.stdout)
+            print("Expected standalone-fingerprint to print TARGET_FINGERPRINT.")
+            return 1
+        report = tmp / "review.md"
+        report.write_text(
+            f"Agent ID: 019f-standalone-reviewer\nTarget Fingerprint: {fingerprint}\n\n" + IMPLEMENTATION_REVIEW_BODY,
+            encoding="utf-8",
+        )
+        recorded = standalone(
+            harness, workspace, "standalone-review",
+            "--role", "implementation-reviewer", "--agent-id", "019f-standalone-reviewer",
+            "--report", str(report), "--target", "target.txt",
+        )
+        if recorded.returncode != 0:
+            print(recorded.stdout)
+            print("Expected a passing standalone review with a current fingerprint to record.")
+            return 1
+        (workspace / "target.txt").write_text("v2 changed\n", encoding="utf-8")
+        stale = standalone(
+            harness, workspace, "standalone-review",
+            "--role", "implementation-reviewer", "--agent-id", "019f-standalone-reviewer",
+            "--report", str(report), "--target", "target.txt",
+        )
+        if stale.returncode == 0:
+            print(stale.stdout)
+            print("Expected a standalone review to go stale after the target changed.")
+            return 1
+
+        # single-source-of-truth guard: an active loop disables standalone
+        loop_dir = workspace / ".codex" / "dev-loop"
+        loop_dir.mkdir(parents=True, exist_ok=True)
+        (loop_dir / "loop-state.json").write_text(json.dumps({"phase": "implementation"}), encoding="utf-8")
+        blocked = standalone(harness, workspace, "standalone-test", "--label", "feat", "--stage", "red", "--command", fail_command())
+        if blocked.returncode == 0:
+            print(blocked.stdout)
+            print("Expected standalone commands to be refused while a loop is active.")
+            return 1
+        guard_still_ok = standalone(harness, workspace, "guard-check")
+        if guard_still_ok.returncode not in (0, 1):
+            print(guard_still_ok.stdout)
+            print("Expected guard-check to remain usable regardless of loop state.")
+            return 1
+        (loop_dir / "loop-state.json").write_text(json.dumps({"phase": "complete"}), encoding="utf-8")
+        allowed = standalone(harness, workspace, "standalone-test", "--label", "feat2", "--stage", "red", "--command", fail_command())
+        if allowed.returncode != 0:
+            print(allowed.stdout)
+            print("Expected standalone commands to resume once the loop is complete.")
+            return 1
+
     return 0
 
 
