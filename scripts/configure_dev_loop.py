@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """First-run configuration wizard for codex-dev-loop."""
 
 from __future__ import annotations
@@ -19,9 +19,9 @@ def default_output() -> Path:
 
 
 DEFAULT_OUTPUT = default_output()
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
-# Advanced keys kept out of the five-question wizard on purpose; they get
+# Advanced keys kept out of the four-question wizard on purpose; they get
 # safe defaults here and can be edited in the JSON directly.
 ADVANCED_DEFAULTS = {
     "default_scale": "standard",
@@ -60,7 +60,7 @@ QUESTIONS = {
         "prompt": "3. 质量门严格度选哪种？",
         "default": "standard",
         "options": [
-            ("standard", "标准", "强制 lint、typecheck、test、ai-code-quality-gate、GitHub Actions、PR review。"),
+            ("standard", "标准", "强制 lint、typecheck、test、ai-code-quality-gate 和 GitHub Actions；第三方 PR AI review 不默认强制。"),
             ("strict", "严格", "标准项 + Semgrep / CodeQL / Sonar / Qodana 可用时必须通过。"),
             ("light", "轻量", "只强制 test 和 ai-code-quality-gate。"),
         ],
@@ -73,15 +73,6 @@ QUESTIONS = {
             ("2", "2 次", "更快停止。"),
             ("1", "1 次", "非常保守。"),
             ("0", "失败就停止", "第一次失败就停下询问。"),
-        ],
-    },
-    "risk_mode": {
-        "prompt": "5. 遇到高风险情况时怎么处理？",
-        "default": "stop_and_ask",
-        "options": [
-            ("stop_and_ask", "停止并询问", "需求不清、质量门失败、架构/安全/数据风险、缺 token、需要外部服务时都停下。"),
-            ("serious_only", "只在严重风险时停止", "普通问题允许继续尝试修复。"),
-            ("best_effort", "尽量自动推进", "仅在无法继续时停止。"),
         ],
     },
 }
@@ -102,7 +93,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-types", choices=[value for value, _, _ in QUESTIONS["source_types"]["options"]])
     parser.add_argument("--quality-profile", choices=[value for value, _, _ in QUESTIONS["quality_profile"]["options"]])
     parser.add_argument("--test-failure-limit", choices=[value for value, _, _ in QUESTIONS["test_failure_limit"]["options"]])
-    parser.add_argument("--risk-mode", choices=[value for value, _, _ in QUESTIONS["risk_mode"]["options"]])
     return parser.parse_args()
 
 
@@ -150,7 +140,6 @@ def build_config(args: argparse.Namespace, output: Path) -> dict:
     source_choice = choose("source_types", args.source_types, args.non_interactive)
     quality_profile = choose("quality_profile", args.quality_profile, args.non_interactive)
     test_failure_limit = choose("test_failure_limit", args.test_failure_limit, args.non_interactive)
-    risk_mode = choose("risk_mode", args.risk_mode, args.non_interactive)
     advanced = load_existing_advanced(output)
     advanced["max_test_retries_per_unit"] = int(test_failure_limit)
     return {
@@ -160,7 +149,6 @@ def build_config(args: argparse.Namespace, output: Path) -> dict:
         "source_types": SOURCE_MAP[source_choice],
         "quality_profile": quality_profile,
         "test_failure_limit": int(test_failure_limit),
-        "risk_mode": risk_mode,
         **advanced,
     }
 
@@ -187,12 +175,12 @@ def print_summary(config: dict, output: Path) -> None:
     limit = config["test_failure_limit"]
     limit_label = "失败就停止" if limit == 0 else f"{limit} 次"
     print(f"- 测试失败自动修复次数：{limit_label}")
-    print(f"- 高风险处理方式：{LABELS['risk_mode'][config['risk_mode']]}")
+    print("- 高风险处理方式：架构、安全、数据、凭证与质量门风险始终停止并询问")
     print()
     print(f"配置文件：{output}")
     print(
         f"自动化范围当前的设置是“{LABELS['automation_level'][config['automation_level']]}”；"
-        "如后续需要调整自动化范围、需求来源、质量门严格度、测试重试次数或风险处理方式，也请随时告知我。"
+        "如后续需要调整自动化范围、需求来源、质量门严格度或测试重试次数，也请随时告知我。"
     )
     print(
         f"高级选项（默认任务规模 default_scale={config['default_scale']}、规格基线目录 spec_dir={config['spec_dir']}、"

@@ -9,6 +9,8 @@ description: Fix a bug or add a small piece of behavior test-first, enforcing a 
 
 约定：`<core>` = codex-dev-loop 主 skill 目录下的 `scripts/dev_loop_harness.py`。
 
+开始前运行 `python <core> version --require 0.7.0`；版本不足或核心缺失时停止并更新主 skill。
+
 ## 何时用 / 何时不用
 
 - **用**：修一个 bug、加一个小函数、一处有界行为改动，想要 TDD 纪律但不需要整条流水线。

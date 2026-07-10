@@ -9,6 +9,8 @@ description: Manage a repository's living specification baseline under specs/ �
 
 约定：`<core-dir>` = codex-dev-loop 主 skill 目录；`<core>` = `<core-dir>/scripts/dev_loop_harness.py`。基线格式与 delta 格式见 `<core-dir>/references/spec-baseline.md`。
 
+开始前运行 `python <core> version --require 0.7.0`；版本不足或核心缺失时停止并更新主 skill。
+
 ## 何时用 / 何时不用
 
 - **用**：老仓库首次引入规格管理（bootstrap）；某次改动需要把需求级更新沉淀进 `specs/`。
@@ -41,7 +43,7 @@ description: Manage a repository's living specification baseline under specs/ �
 ## 动作 C：合并并校验
 
 1. 把 delta 应用到 `specs/<capability>.md`（新增/替换/删除对应 requirement 块）。
-2. 机械校验（每个 ADDED/MODIFIED 标题在基线中存在、每个 REMOVED 标题已消失）：
+2. 机械校验（每个 ADDED/MODIFIED requirement 正文与基线一致、无重复标题、每个 REMOVED 标题已消失）：
 
 ```bash
 python <core> check-spec-delta --delta spec-delta.md --spec-dir specs

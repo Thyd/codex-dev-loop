@@ -9,6 +9,7 @@
 | skill | 干什么 | 独立触发场景 |
 |---|---|---|
 | `dev-clarify` | 把模糊需求聊成 Goal/AC 齐全的 spec | 「我有个想法」 |
+| `dev-debug` | 复现并定位未知根因，再用回归测试锁定修复 | 测试失败、崩溃或错误行为且根因未明 |
 | `dev-plan` | 产出规划五件套，不写代码 | 只要方案不要实现 |
 | `dev-review` | 独立 reviewer 审方案/diff，绑定指纹 | 要个第二意见 |
 | `dev-tdd` | 单元内红绿 TDD，红先于绿 | 修一个 bug / 加一个小行为 |
@@ -33,7 +34,8 @@
 │
 └─ ③ 要改代码 → 两步预检后选链：
        a. 需求清楚吗？不清楚 → 先 dev-clarify
-       b. python <core> guard-check + 估计单元数 / 是否要 PR
+       b. 是未知根因的故障吗？是 → dev-debug → dev-tdd
+       c. python <core> guard-check + 估计单元数 / 是否要 PR
        │
        ├─ micro   1 单元、非敏感、不发 PR
        │          → dev-tdd
@@ -62,7 +64,7 @@
 
 ## 底线闸门集（任何链，含 micro，都不可省）
 
-- **测试证据**：至少一条针对当前树的绿测（`dev-tdd` 红绿，或 `standalone-test --mode regression-only`）。`dev-ship` 的 `ship-check` 会强制。
+- **测试证据**：本次变更声明的每个 behavior label 都必须有针对当前树的最新绿测（`dev-tdd` 红绿，或诚实的 `regression-only`）。`dev-ship` 的 `ship-check --label ...` 会强制。
 - **不碰保护分支**：`main`/`master`/`develop`/`release/*`。`ship-check` 会强制。
 - **变更留档**：证据落 `<evidence_dir>/`（默认 `.codex/evidence/`）。
 

@@ -1,29 +1,30 @@
-﻿---
+---
 name: codex-dev-loop
 description: Run an end-to-end autonomous development loop on Claude Code from a Markdown spec, Notion page, or clarified conversation to reviewed implementation, TDD-gated tests, spec baseline updates, quality gates, git commit, pushed branch, and pull request. Use when the agent must clarify a goal and acceptance criteria, size the task (small/standard/large gates), elaborate technical design, test plan, risk analysis, spec delta, and development plan, run subagent reviews, implement units test-first (optionally in parallel git worktrees), merge spec deltas into the repository spec baseline, enforce quality gates, and open GitHub PRs while stopping on ambiguity, repeated test failures, quality failures, architecture risk, or missing credentials.
 ---
 
 # Codex Dev Loop — Claude Code Adapter
 
-Current version: 0.4.0
+Current version: 0.7.0
 
-This adapter runs the same harness-enforced loop as the root [SKILL.md](../../SKILL.md), mapped to Claude Code. The state machine, gates, fingerprints, artifacts, and stop conditions are identical; only the agent-specific mechanics differ. Read the root SKILL.md sections for anything not restated here — this file only overrides what is Claude-specific.
+This adapter runs the same harness-enforced loop as the root [SKILL.md](../../SKILL.md), mapped to Claude Code. The state machine, gates, fingerprints, artifacts, and stop conditions are identical; only the agent-specific mechanics differ. Read the root SKILL.md sections for anything not restated here — this file only overrides what is Claude-specific. Before resuming 0.5.x evidence, run `doctor`; preview and run `migrate-evidence` when required.
 
 ## Installation
 
 ```bash
-git clone https://github.com/Thyd/codex-dev-loop.git ~/.claude/skills/codex-dev-loop
-cp ~/.claude/skills/codex-dev-loop/adapters/claude-code/SKILL.md ~/.claude/skills/codex-dev-loop/SKILL.md
+git clone https://github.com/Thyd/codex-dev-loop.git ~/.claude/codex-dev-loop-src
+cp -R ~/.claude/codex-dev-loop-src ~/.claude/skills/codex-dev-loop
+cp ~/.claude/codex-dev-loop-src/adapters/claude-code/SKILL.md ~/.claude/skills/codex-dev-loop/SKILL.md
 ```
 
-Re-run the `cp` after every `git pull`.
+Keep the source clone clean. After every `git pull` in `~/.claude/codex-dev-loop-src`, replace the installed copy and re-apply the adapter; do not overwrite the tracked root `SKILL.md` inside the source clone.
 
 ## Claude Code Mapping
 
 | Root SKILL.md says | On Claude Code do |
 | --- | --- |
 | `<loop-home>` = `~/.codex` | Set `CODEX_DEV_LOOP_HOME` to your `~/.claude` directory before every harness call, or export it for the session. Config then lives at `~/.claude/config/codex-dev-loop.json`. |
-| `multi_agent_v1` Subagents | Spawn each reviewer / unit-implementer with the Agent tool (`subagent_type: general-purpose`), one agent per role per round. Use the returned agent/session id as `--agent-id` (pad or suffix it if shorter than 12 characters). |
+| Host subagent/collaboration API | Spawn each reviewer / unit-implementer with the Agent tool (`subagent_type: general-purpose`), one fresh agent per role per round. Use the returned agent/session id as `--agent-id`; never invent or pad an identifier. |
 | `$automated-dev-executor` test gate | Not required. The harness auto-falls back to the bundled `<skill-dir>/scripts/test_gate.py` (same evidence protocol). |
 | `$ai-code-quality-gate` | Not required. The harness auto-falls back to the bundled `<skill-dir>/scripts/quality_gate_fallback.py`. Pass explicit `--command "gate=<cmd>"` overrides to `run-quality` for gates the fallback cannot autodetect. |
 | `$codex-dev-loop` invocation | The skill triggers via Claude Code's skill mechanism; the user may also invoke it as `/codex-dev-loop`. |

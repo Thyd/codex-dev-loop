@@ -1,4 +1,61 @@
-﻿# Changelog
+# Changelog
+
+## 0.7.0 - 2026-07-11
+
+### Added
+
+- Added a pinned pytest development environment, native pytest contract and integration suites, and subprocess-safe repository-local fixtures.
+- Added Windows, Linux, and macOS CI across Python 3.11 and 3.13, with separate fast and slow pytest jobs inside each matrix entry.
+- Added `scripts/forward_test.py` to prepare neutral planning-only and commit-only tasks for fresh agents and to evaluate raw archive, review, TDD, quality, Git, and automation-boundary evidence.
+
+### Changed
+
+- Reduced trigger-time `SKILL.md` from 490 lines to about 160 and moved the complete phase manual into `references/full-loop-workflow.md` with progressive-disclosure navigation.
+- Split the 3,660-line harness implementation into focused settings, workspace, spec, validation, loop-command, standalone-command, parser, and compatibility-facade modules without changing the public CLI or legacy Python import surface.
+- Split the legacy self-test implementation into native pytest loop and standalone integration suites; `self_test.py` and `legacy_self_test.py` are now thin compatibility runners.
+- Made successful archive removal part of the explicit completion contract after a real forward test found that `phase: complete` alone was too easy to report as finished.
+
+### Compatibility
+
+- CLI paths, command names, phase semantics, evidence schema `1`, and config schema `4` remain unchanged. Existing 0.6.x evidence remains readable.
+
+## 0.6.0 - 2026-07-10
+
+### Added
+
+- Added evidence schema v1 for loop state and standalone TDD/review ledgers. Legacy 0.5.x documents migrate without losing unknown host fields; corrupt, wrong-kind, and future-schema documents fail closed.
+- Added read-only `doctor` and explicit `migrate-evidence` commands, including dry-run and stable JSON output. `version --json` and `fingerprint --json` expose machine-readable contracts for adapters and automation.
+- Added focused contract, CLI compatibility, evidence integration, and test-layout suites.
+
+### Changed
+
+- Turned `scripts/dev_loop_harness.py` into a stable thin entrypoint backed by the modular `scripts/dev_loop_core/` package while preserving every existing command and Python import used by bundled tooling.
+- Centralized atomic evidence persistence in the core contract layer. Existing mutating commands rewrite legacy evidence to the current schema on their next successful write.
+- Replaced the monolithic self-test entrypoint with a focused suite runner. Legacy loop and standalone integration scenarios now use repository-local, subprocess-safe sandboxes and run independently in CI on Windows and Linux.
+
+### Compatibility
+
+- Existing CLI paths, command names, phase semantics, and 0.5.x evidence remain supported. Run `doctor`, then preview and apply `migrate-evidence` before resuming an in-flight 0.5.x workspace.
+
+## 0.5.2 - 2026-07-10
+
+### Fixed
+
+- Removed UTF-8 BOMs from packaged skill entrypoints so YAML frontmatter starts at byte zero; added `validate_skill_package.py` and a Windows/Linux CI matrix to prevent discovery regressions and version drift.
+- Replaced the stale `multi_agent_v1` instruction with host-capability-based subagent spawning and aligned the Claude adapter, core, package, and UI metadata on version 0.5.2.
+- Bound requirements review fingerprints to both `source.md` and `clarification-log.md`.
+- Made large-scale artifact validation require content in every declared design, test, and risk section; reviewer reports now require non-empty evidence sections.
+- Required a declared expected failure for red-stage evidence and added Unicode-aware failure matching.
+- Upgraded spec reconciliation from title presence to normalized requirement-block equality, with duplicate-title and strict kebab-case capability checks.
+- Added a `plan-only` artifact-validation profile; reordered standalone shipping around feature-branch creation; made `ship-check` require every declared behavior label on the final tree; and enforced sensitive-path escalation inside standalone TDD and shipping.
+- Made final review validation honor the small-scale risk-review skip and counted untracked source content in `max_diff_lines`.
+
+### Changed
+
+- Config schema v4 removes the non-functional `risk_mode` preference. Architecture, security, data, credentials, external services, and required quality gates remain unconditional hard stops.
+- Standard cloud checks no longer require a third-party AI review SaaS; strict still requires the configured scanners and PR AI review.
+- Added Chinese `## 目标` / `## 验收标准` aliases, core-version handshakes for every copied sub-skill, and explicit `dev-debug` routing.
+- Reduced the trigger-time root `SKILL.md` below 500 lines by making the reviewer reference canonical, and added a contents section to the long reviewer reference.
 
 ## 0.5.1 - 2026-07-08
 
@@ -102,6 +159,3 @@ Composability release: the monolithic loop keeps its harness-enforced evidence c
 
 - Added `record-commit` to bind commit-only completion to the current HEAD and workspace fingerprint.
 - Added self-test coverage for source type enforcement, early completion modes, local simulation restrictions, and stricter cloud check states.
-
-
-

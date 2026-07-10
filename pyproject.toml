@@ -1,0 +1,8 @@
+[tool.pytest.ini_options]
+minversion = "9.1"
+testpaths = ["scripts/tests"]
+addopts = "-ra --strict-markers -p no:cacheprovider"
+markers = [
+  "integration: exercises the harness through subprocess boundaries",
+  "slow: runs the complete loop or standalone regression suite",
+]

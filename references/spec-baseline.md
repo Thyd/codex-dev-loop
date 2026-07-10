@@ -70,7 +70,7 @@ Rules:
 python <skill-dir>/scripts/dev_loop_harness.py --root .codex/dev-loop record-spec-merge
 ```
 
-The harness verifies mechanically: every ADDED/MODIFIED title exists in the capability file, every REMOVED title is gone, and records the result bound to plan and workspace fingerprints. `## No Spec Impact` deltas are recorded without file checks.
+The harness verifies mechanically: every normalized ADDED/MODIFIED requirement block exactly matches the capability file, duplicate titles are rejected, every REMOVED title is gone, and the result is bound to plan and workspace fingerprints. `## No Spec Impact` deltas are recorded without file checks.
 
 3. Run `verify-units` afterwards — spec edits change the workspace fingerprint, so unit evidence must be refreshed against the final tree.
 

@@ -80,7 +80,8 @@ def main() -> int:
     if not args.dry_run:
         print(
             "\nDone. The sub-skills share the harness in codex-dev-loop/scripts/, "
-            "so keep the main codex-dev-loop skill installed and updated."
+            "so keep the main codex-dev-loop skill installed and updated. Re-run this installer after every core update "
+            "to synchronize the copied SKILL.md files."
         )
     return 0
 

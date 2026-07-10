@@ -1,4 +1,12 @@
-﻿# TDD And Parallel Units
+# TDD And Parallel Units
+
+## Contents
+
+- [TDD stages per unit](#tdd-stages-per-unit)
+- [Serial mode](#serial-mode)
+- [Parallel mode](#parallel-mode-independent-units-only)
+- [unit-implementer Subagent](#unit-implementer-subagent)
+- [Failure handling](#failure-handling)
 
 ## TDD Stages Per Unit
 

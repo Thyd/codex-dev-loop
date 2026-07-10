@@ -8,11 +8,14 @@ Local Codex execution is the development harness. GitHub Actions is the cloud en
 
 The PR should not be considered complete until required GitHub checks are visible and pass. Missing configuration is a blocker, not a pass.
 
-## Required Checks
+## Required Checks By Profile
 
-Require these checks. If the repository does not have the workflow/checks, add the workflow as part of the branch or stop with a blocker:
+Light and standard require:
 
 - `ai-quality-gate`
+
+Strict additionally requires:
+
 - `semgrep`
 - `codeql`
 - `sonar`
@@ -20,7 +23,7 @@ Require these checks. If the repository does not have the workflow/checks, add t
 - `subagent-alignment`
 - Qodo PR-Agent or CodeRabbit
 
-Use the `$ai-code-quality-gate` GitHub Actions reference for the workflow body.
+Existing repository checks must still be respected, but an optional check is not promoted to a profile requirement merely because it exists. If a profile-required workflow/check is absent, add it within approved scope or stop with a blocker. Use the `$ai-code-quality-gate` GitHub Actions reference for the workflow body.
 
 ## Cloud Check Loop
 
@@ -33,7 +36,7 @@ After opening the PR:
 6. If checks fail because of code, fix code locally and repeat the development loop.
 7. If checks fail because of missing secrets, missing paid service setup, branch protection, or organization settings, stop and ask the user.
 
-The harness verifies cloud checks with `gh pr checks` and requires the fixed checks plus Qodo PR-Agent, CodeRabbit, or another AI review check. Required check names are matched by exact canonical name, not by substring. Optional non-required checks may be recorded, but they do not block the loop unless they are the required AI review check. Do not hand-write cloud evidence during a real loop.
+The harness verifies cloud checks with `gh pr checks`. Strict requires Qodo PR-Agent, CodeRabbit, or another AI review check; standard does not require an external AI SaaS. Required check names are matched by exact canonical name or documented scanner alias, not arbitrary substring. Optional non-required checks may be recorded without blocking the loop. Do not hand-write cloud evidence during a real loop.
 
 ## Stop Conditions
 

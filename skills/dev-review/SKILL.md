@@ -9,6 +9,8 @@ description: Get an independent, fingerprinted review of a plan document or a co
 
 约定：`<core>` = codex-dev-loop 主 skill 目录下的 `scripts/dev_loop_harness.py`。
 
+开始前运行 `python <core> version --require 0.7.0`；版本不足或核心缺失时停止并更新主 skill。
+
 ## 何时用 / 何时不用
 
 - **用**：想对一份设计/计划、或一段改动拿一个独立的第二意见，但不需要跑完整 loop。

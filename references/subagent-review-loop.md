@@ -1,4 +1,14 @@
-﻿# Subagent Review Loop
+# Subagent Review Loop
+
+## Contents
+
+- [requirements-reviewer](#requirements-reviewer)
+- [plan-reviewer](#plan-reviewer)
+- [implementation-reviewer](#implementation-reviewer)
+- [merge-integrator](#merge-integrator)
+- [docs-impact-reviewer](#docs-impact-reviewer)
+- [risk-reviewer](#risk-reviewer)
+- [Review iteration](#review-iteration)
 
 Use four independent Subagent reviewer roles plus unit implementers. Give each role raw artifacts and a narrow task.
 (The `unit-implementer` role for parallel development lives in [tdd-parallel-units.md](tdd-parallel-units.md).)

@@ -9,6 +9,8 @@ description: Debug a failing test, crash, or wrong behavior by root cause, not b
 
 约定：`<core>` = codex-dev-loop 主 skill 目录下的 `scripts/dev_loop_harness.py`。
 
+开始前运行 `python <core> version --require 0.7.0`；版本不足或核心缺失时停止并更新主 skill。
+
 ## 何时用 / 何时不用
 
 - **用**：有测试失败/崩溃/行为错误，且**根因未明**。
@@ -41,4 +43,4 @@ python <core> standalone-test --label <bug-id> --stage green  --command "<同一
 
 ## 与交付衔接
 
-修复要发 PR 时接 `dev-ship`——`ship-check` 会要求这条回归绿测针对当前树，确保「修复 + 回归测试」一起进 PR。
+修复要发 PR 时接 `dev-ship`，并把 bug label 传给 `ship-check --label <bug-id>`，确保「修复 + 回归测试」一起进 PR。

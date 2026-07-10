@@ -1,7 +1,7 @@
-﻿# Codex Dev Loop · 从需求到 PR 的自动开发 loop
+# Codex Dev Loop · 从需求到 PR 的自动开发 loop
 
 ![Skill](https://img.shields.io/badge/Skill-Codex%20%7C%20Claude%20Code-111111?style=flat-square)
-![Version](https://img.shields.io/badge/Version-v0.5.1-blue?style=flat-square)
+![Version](https://img.shields.io/badge/Version-v0.7.0-blue?style=flat-square)
 ![Quality Gate](https://img.shields.io/badge/Quality%20Gate-required-0A7CFF?style=flat-square)
 ![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-supported-2088FF?style=flat-square)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
@@ -42,7 +42,19 @@ git -C ~/.codex/skills/codex-dev-loop pull
 git -C "$env:USERPROFILE\.codex\skills\codex-dev-loop" pull
 ```
 
-初次使用前，运行 5 问配置：
+如果安装过独立 `dev-*` 子 skill，更新主仓库后重新运行 `scripts/install_skills.py`，同步复制出去的 SKILL.md。
+
+从 0.5.x 升级且仓库里已有 `.codex/dev-loop/` 或 standalone 证据时，先检查并迁移证据 schema（`doctor` 返回 `needs-migration` 时退出码为 1，这是预期提示）：
+
+```bash
+python ~/.codex/skills/codex-dev-loop/scripts/dev_loop_harness.py --root .codex/dev-loop --workspace . doctor
+python ~/.codex/skills/codex-dev-loop/scripts/dev_loop_harness.py --root .codex/dev-loop --workspace . migrate-evidence --dry-run
+python ~/.codex/skills/codex-dev-loop/scripts/dev_loop_harness.py --root .codex/dev-loop --workspace . migrate-evidence
+```
+
+0.7.0 保留原 CLI 路径、子命令、阶段语义和证据 schema，并将内部结构升级为精简主 SKILL、模块化 harness、pytest 测试与三平台 CI。
+
+初次使用前，运行 4 问配置：
 
 ```bash
 python ~/.codex/skills/codex-dev-loop/scripts/configure_dev_loop.py
@@ -52,11 +64,12 @@ python ~/.codex/skills/codex-dev-loop/scripts/configure_dev_loop.py
 python "$env:USERPROFILE\.codex\skills\codex-dev-loop\scripts\configure_dev_loop.py"
 ```
 
-Claude Code 用户改装到 `~/.claude/skills/`，并用适配版 SKILL.md 覆盖根文件（详见 `adapters/claude-code/SKILL.md`）：
+Claude Code 用户应把干净源码克隆在 skills 目录之外，再复制到安装目录并应用适配器；不要覆盖 Git 工作树里的受跟踪 `SKILL.md`：
 
 ```bash
-git clone https://github.com/Thyd/codex-dev-loop.git ~/.claude/skills/codex-dev-loop
-cp ~/.claude/skills/codex-dev-loop/adapters/claude-code/SKILL.md ~/.claude/skills/codex-dev-loop/SKILL.md
+git clone https://github.com/Thyd/codex-dev-loop.git ~/.claude/codex-dev-loop-src
+cp -R ~/.claude/codex-dev-loop-src ~/.claude/skills/codex-dev-loop
+cp ~/.claude/codex-dev-loop-src/adapters/claude-code/SKILL.md ~/.claude/skills/codex-dev-loop/SKILL.md
 ```
 
 安装后重启 Codex，然后把下面这段话发给 Codex：
@@ -138,7 +151,7 @@ python ~/.codex/skills/codex-dev-loop/scripts/install_skills.py --only dev-tdd,d
 | 规格沉淀 | 把规格 delta 合并进 `specs/` 基线并机械校验 | 基线与 delta 不一致就不放行评审 |
 | 本地质量门 | 强制调用 `ai-code-quality-gate`（或内置 fallback），严格度按初始配置控制 | 质量门失败就停止 |
 | PR 阶段 | 创建分支、提交、推送、开 PR | 缺权限或 token 就停止 |
-| 云端检查 | 检查 GitHub Actions、PR review、Qodo PR-Agent 或 CodeRabbit | 检查失败或缺失就停止 |
+| 云端检查 | 检查 GitHub Actions；strict 额外要求第三方 PR AI review | 必需检查失败或缺失就停止 |
 | 归档 | complete 后把本次运行产物移入 `dev-loop-archive/` | 未归档就不允许直接 init 下一轮 |
 
 ### 一次完整流程
@@ -160,7 +173,7 @@ python ~/.codex/skills/codex-dev-loop/scripts/install_skills.py --only dev-tdd,d
 9. 把 `spec-delta.md` 合并进仓库 `specs/` 规格基线，`record-spec-merge` 机械校验，然后 `verify-units` 在主工作区对最终代码树复验全部单元。
 10. 本地运行 `ai-code-quality-gate`（未安装时用内置 fallback），覆盖 lint、typecheck、test、Semgrep、CodeQL、Sonar、Qodana 等可用检查。
 11. 创建新分支并提交代码；如果是 `commit_only` 模式，记录 commit 后完成。
-12. 如果自动化范围允许，推送到 GitHub、创建 PR（规格基线更新随同一个 PR 评审），并等待 GitHub Actions 和 PR 级 AI review。
+12. 如果自动化范围允许，推送到 GitHub、创建 PR（规格基线更新随同一个 PR 评审），并等待 GitHub Actions；strict profile 还等待 PR 级 AI review。
 13. 把过程记录写回 `.codex/dev-loop/`，complete 后归档到 `.codex/dev-loop-archive/`。
 
 ### 需要你准备什么
@@ -238,7 +251,7 @@ python ~/.codex/skills/codex-dev-loop/scripts/configure_dev_loop.py
 python "$env:USERPROFILE\.codex\skills\codex-dev-loop\scripts\configure_dev_loop.py"
 ```
 
-它只问 5 个问题：
+它只问 4 个问题：
 
 | 问题 | 默认值 | 影响 |
 |---|---|---|
@@ -246,7 +259,6 @@ python "$env:USERPROFILE\.codex\skills\codex-dev-loop\scripts\configure_dev_loop
 | 需求来源主要是什么？ | Markdown + Notion | 决定允许从哪些来源读取需求 |
 | 质量门严格度选哪种？ | 标准 | 决定强制哪些本地质量门和云端检查 |
 | 测试失败允许自动修复几次？ | 3 次 | 同一测试门连续失败超过重试次数后停止；通过一次即重置计数 |
-| 遇到高风险情况时怎么处理？ | 停止并询问 | 决定需求不清、缺 token、外部服务、安全/数据风险时是否继续 |
 
 配置会写入：
 
@@ -256,10 +268,12 @@ python "$env:USERPROFILE\.codex\skills\codex-dev-loop\scripts\configure_dev_loop
 
 harness 会执行这些配置：不允许的来源类型会在 `init --source-type ...` 阶段被拒绝；`planning_only` 和 `commit_only` 会在各自完成点停止。
 
+架构、安全、数据、凭证、外部服务和必需质量门风险始终停止并询问，不提供可绕过硬闸门的风险模式。
+
 配置完成后会输出类似说明：
 
 ```text
-自动化范围当前的设置是“创建 PR 后停止”；如后续需要调整自动化范围、需求来源、质量门严格度、测试重试次数或风险处理方式，也请随时告知我。
+自动化范围当前的设置是“创建 PR 后停止”；如后续需要调整自动化范围、需求来源、质量门严格度或测试重试次数，也请随时告知我。
 ```
 
 ### 依赖环境
@@ -271,12 +285,10 @@ harness 会执行这些配置：不允许的来源类型会在 `init --source-ty
 - Git。
 - GitHub CLI `gh`，并且已经登录目标 GitHub 账号。
 - 目标仓库有 push 权限。
-- 已安装 companion skills：
-  - `automated-dev-executor`
-  - `ai-code-quality-gate`
 
 完整质量门建议配置：
 
+- companion skills `automated-dev-executor` 与 `ai-code-quality-gate`（未安装时使用内置 fallback）。
 - GitHub Actions。
 - lint 命令。
 - typecheck 命令。
@@ -285,7 +297,7 @@ harness 会执行这些配置：不允许的来源类型会在 `init --source-ty
 - CodeQL。
 - SonarQube 或 SonarCloud。
 - Qodana。
-- Qodo PR-Agent 或 CodeRabbit。
+- Qodo PR-Agent 或 CodeRabbit（strict profile，可选接入）。
 
 不是所有工具都必须同时存在。规则是：仓库已经配置了什么，loop 就必须认真执行什么；你明确要求必须执行什么，缺了就停下来。
 
@@ -330,10 +342,10 @@ harness 会执行这些配置：不允许的来源类型会在 `init --source-ty
 - 规划评审闸门：技术方案、测试计划、风险分析、规格 delta 必须通过 Subagent 评审。
 - TDD 闸门：`- TDD: red` 单元没有失败的红测试证据，绿测试不予记录；`regression-only` 豁免必须写进计划并由 plan-reviewer 审批。
 - 测试闸门：每个开发单元都要跑测试，结果写入记录；worktree 内的证据只是过程证据，合并后必须 `verify-units` 对最终代码树复验。
-- 规格闸门：`record-spec-merge` 机械校验基线与 delta 一致（ADDED/MODIFIED 标题存在、REMOVED 标题消失），不一致不放行实现评审。
+- 规格闸门：`record-spec-merge` 比较完整的 ADDED/MODIFIED requirement 正文、拒绝重复标题，并确认 REMOVED 标题消失。
 - 规模护栏：small 档跳过 risk_review 前，harness 检查变更集是否触及依赖清单、迁移、SQL、CI/CD、Docker、密钥或 auth/security 路径，命中即拒绝跳过。
 - 质量闸门：调用 `ai-code-quality-gate`（未安装时用内置 fallback），已配置 profile gate 始终强制执行，`run-quality --require` 只能追加 gate。
-- PR 闸门：检查 GitHub Actions 和 PR 级 AI review，并确认 PR 仓库与本地 `origin` 一致。
+- PR 闸门：检查 GitHub Actions 并确认 PR 仓库与本地 `origin` 一致；第三方 PR AI review 只在 strict profile 强制。
 - 云端检查闸门：required check 用规范化后的精确名称匹配，或匹配已知扫描器别名（如 `SonarCloud Code Analysis` 可满足 `sonar`）；非必需的可选检查失败不会阻断。
 - 指纹闸门：规划、评审、测试、规格合并和质量报告都绑定当前文件状态，防止复用旧报告。
 
@@ -354,26 +366,62 @@ harness 会执行这些配置：不允许的来源类型会在 `init --source-ty
 ```text
 codex-dev-loop/
   VERSION                          当前版本号
+  pyproject.toml                   pytest 标记与测试发现配置
+  requirements-dev.txt             锁定开发测试依赖
   SKILL.md                         skill 主文件（Codex）
   adapters/claude-code/SKILL.md    Claude Code 适配版 skill 文件
   agents/openai.yaml               Codex UI 展示信息
   scripts/
     configure_dev_loop.py          初次安装配置向导
-    dev_loop_harness.py            状态机和阶段闸门
+    dev_loop_harness.py            向后兼容的薄 CLI 入口
+    forward_test.py                真实 fresh-agent 用例生成与证据判分
+    dev_loop_core/
+      cli.py                       旧 Python 导入面的薄兼容 facade
+      settings.py                  常量、配置与状态默认值
+      workspace.py                 工作区、Git、指纹与证据 I/O
+      specs.py                     需求与规格基线处理
+      validation.py                阶段、产物、评审与门禁校验
+      commands_loop.py             完整 loop 子命令
+      commands_standalone.py       可组合 standalone 子命令
+      parser.py                    CLI parser 与命令路由
     test_gate.py                   内置测试闸门 fallback（未装 automated-dev-executor 时启用）
     quality_gate_fallback.py       内置质量闸门 fallback（未装 ai-code-quality-gate 时启用）
-    self_test.py                   自测脚本（不依赖伴随 skill 即可全量运行）
+    self_test.py                   全量 pytest 薄入口
+    legacy_self_test.py            旧自测命令的 pytest 兼容入口
+    tests/                         原生 pytest 契约、集成与结构测试
     validate_dev_loop_artifacts.py 产物校验
   references/
+    full-loop-workflow.md          从主 SKILL 拆出的完整命令顺序
     artifact-templates.md          规划产物模板
     git-pr-flow.md                 分支、提交、PR 流程
     github-actions-cloud.md        云端检查说明
     subagent-review-loop.md        Subagent 评审流程
     tdd-parallel-units.md          单元内 TDD 与 worktree 并行开发
     spec-baseline.md               规格基线与 delta 合并规则
+    evidence-contracts.md          证据 schema、诊断与迁移契约
   docs/sponsor.md                  赞助说明
   assets/wechat-pay-qr.jpg         赞助收款图片
 ```
+
+### 维护与验证
+
+安装锁定的测试依赖，然后分别跑快速套件与真实子进程集成套件：
+
+```bash
+python -m pip install -r requirements-dev.txt
+python -m pytest -q -m "not slow"
+python -m pytest -q -m slow
+python scripts/validate_skill_package.py
+```
+
+GitHub Actions 在 Windows、Linux 和 macOS 上使用 Python 3.11 / 3.13 运行同一组检查。需要评估真实 agent 行为时，先生成一个隔离用例，将它打印的中性提示交给无父会话上下文的 fresh agent，最后用原始证据判分：
+
+```bash
+python scripts/forward_test.py prepare --case commit --out .tmp/forward-commit
+python scripts/forward_test.py evaluate --case commit --repo .tmp/forward-commit/repo
+```
+
+`planning` 与 `commit` 两个 case 分别校验 planning-only 不改代码和 commit-only 的真实 TDD / review / quality / Git / archive 边界。
 
 ### 权限说明
 
@@ -461,7 +509,19 @@ git -C ~/.codex/skills/codex-dev-loop pull
 git -C "$env:USERPROFILE\.codex\skills\codex-dev-loop" pull
 ```
 
-Before the first run, configure the five core preferences:
+If standalone `dev-*` skills are installed, rerun `scripts/install_skills.py` after updating the core so their copied SKILL.md files stay synchronized.
+
+When upgrading from 0.5.x with existing `.codex/dev-loop/` or standalone evidence, inspect and migrate the evidence schema first (`doctor` exits 1 for the expected `needs-migration` status):
+
+```bash
+python ~/.codex/skills/codex-dev-loop/scripts/dev_loop_harness.py --root .codex/dev-loop --workspace . doctor
+python ~/.codex/skills/codex-dev-loop/scripts/dev_loop_harness.py --root .codex/dev-loop --workspace . migrate-evidence --dry-run
+python ~/.codex/skills/codex-dev-loop/scripts/dev_loop_harness.py --root .codex/dev-loop --workspace . migrate-evidence
+```
+
+Version 0.7.0 preserves the CLI path, command names, phase semantics, and evidence schema while upgrading the internals to a slim main SKILL, modular harness, pytest suites, and three-platform CI.
+
+Before the first run, configure the four core preferences:
 
 ```bash
 python ~/.codex/skills/codex-dev-loop/scripts/configure_dev_loop.py
@@ -471,11 +531,12 @@ python ~/.codex/skills/codex-dev-loop/scripts/configure_dev_loop.py
 python "$env:USERPROFILE\.codex\skills\codex-dev-loop\scripts\configure_dev_loop.py"
 ```
 
-Claude Code users install into `~/.claude/skills/` and swap in the adapter SKILL.md (see `adapters/claude-code/SKILL.md`):
+Claude Code users should keep a clean source clone outside the skills directory, copy it into the install location, then apply the adapter. Do not overwrite a tracked SKILL.md inside the source clone:
 
 ```bash
-git clone https://github.com/Thyd/codex-dev-loop.git ~/.claude/skills/codex-dev-loop
-cp ~/.claude/skills/codex-dev-loop/adapters/claude-code/SKILL.md ~/.claude/skills/codex-dev-loop/SKILL.md
+git clone https://github.com/Thyd/codex-dev-loop.git ~/.claude/codex-dev-loop-src
+cp -R ~/.claude/codex-dev-loop-src ~/.claude/skills/codex-dev-loop
+cp ~/.claude/codex-dev-loop-src/adapters/claude-code/SKILL.md ~/.claude/skills/codex-dev-loop/SKILL.md
 ```
 
 Restart Codex, then ask:
@@ -554,7 +615,7 @@ Bad fit:
 | Docs impact review | Check README, docs/, API reference, changelog, examples, env/config docs, migration notes, and user-facing copy | Quality gate blocked until `docs-impact-reviewer` returns `no-docs-needed` |
 | Local quality gate | Run `ai-code-quality-gate` (or the bundled fallback); strictness follows first-run config | Stop on quality failure |
 | PR stage | Create branch, commit, push, and open PR | Stop if credentials are missing |
-| Cloud checks | Verify GitHub Actions and PR-level AI review | Stop if checks fail or are missing |
+| Cloud checks | Verify GitHub Actions; strict also requires third-party PR AI review | Stop if required checks fail or are missing |
 | Archive | Move run records to `dev-loop-archive/` after completion | Next `init` refused until the previous run is archived |
 
 ### Full Workflow
@@ -578,7 +639,7 @@ Bad fit:
 11. `docs-impact-reviewer` decides whether README, docs, API reference, changelog, examples, env/config docs, migration notes, or user-facing copy must be updated; `docs-needed` blocks until fixed and re-reviewed.
 12. The local `ai-code-quality-gate` (or the bundled fallback) runs lint, typecheck, tests, Semgrep, CodeQL, Sonar, Qodana, or the checks available in the target repository.
 13. The agent creates a new branch and commits; in `commit_only` mode, it records the commit and completes.
-14. When automation scope allows it, the agent pushes, opens a PR (spec baseline updates reviewed in the same PR), and waits for GitHub Actions plus PR-level AI review.
+14. When automation scope allows it, the agent pushes, opens a PR (spec baseline updates reviewed in the same PR), and waits for GitHub Actions; strict also waits for PR-level AI review.
 15. The loop writes execution records under `.codex/dev-loop/` and archives them to `.codex/dev-loop-archive/` after completion.
 
 ### Source Spec
@@ -634,7 +695,7 @@ python ~/.codex/skills/codex-dev-loop/scripts/configure_dev_loop.py
 python "$env:USERPROFILE\.codex\skills\codex-dev-loop\scripts\configure_dev_loop.py"
 ```
 
-It asks five questions:
+It asks four questions:
 
 | Question | Default | Impact |
 |---|---|---|
@@ -642,7 +703,6 @@ It asks five questions:
 | What source types do you use? | Markdown + Notion | Controls allowed requirement sources |
 | How strict should quality gates be? | Standard | Controls required local and cloud gates |
 | How many failed test attempts are allowed? | 3 | Controls when the loop stops on repeated test failures |
-| What should happen on high risk? | Stop and ask | Controls unclear requirements, missing tokens, external services, security/data risk |
 
 The config is written to:
 
@@ -652,10 +712,12 @@ The config is written to:
 
 The harness enforces these preferences: disabled source types are rejected during `init --source-type ...`, and `planning_only` / `commit_only` stop at their configured completion points. Advanced JSON keys also set budget/time-box limits: `max_units` (8), `max_files_changed` (20), `max_test_retries_per_unit` (3), `max_review_iterations` (3), `max_quality_fix_rounds` (2), and `max_diff_lines` (1200).
 
+Architecture, security, data, credential, external-service, and required quality-gate risks are always hard stops; there is no preference that weakens these gates.
+
 The wizard ends with a note like:
 
 ```text
-Automation scope is currently set to "Stop after PR creation"; tell me anytime if you want to adjust automation scope, source types, quality strictness, test retry count, or risk handling.
+Automation scope is currently set to "Stop after PR creation"; tell me anytime if you want to adjust automation scope, source types, quality strictness, or test retry count.
 ```
 
 ### Requirements
@@ -667,19 +729,17 @@ Required:
 - Git.
 - GitHub CLI `gh`, authenticated with the target GitHub account.
 - Push access to the target repository.
-- Installed companion skills:
-  - `automated-dev-executor`
-  - `ai-code-quality-gate`
 
 Recommended for full quality enforcement:
 
+- Companion skills `automated-dev-executor` and `ai-code-quality-gate` (bundled fallbacks are used when absent).
 - GitHub Actions.
 - lint, typecheck, and test commands.
 - Semgrep.
 - CodeQL.
 - SonarQube or SonarCloud.
 - Qodana.
-- Qodo PR-Agent or CodeRabbit.
+- Qodo PR-Agent or CodeRabbit (optional strict-profile integration).
 
 Not every tool must exist in every repository. The rule is simple: if the repository has configured a check, the loop must run and respect it; if the user requires a check and it is missing, the loop stops.
 
@@ -711,7 +771,7 @@ The loop does not rely on a Git `pre-commit` hook. Its hooks are harness-enforce
 - Unit test gate; worktree evidence is interim, `merge-integrator` must pass on the merged tree, and `verify-units` must re-verify it.
 - Budget/time-box gate: `max_units`, `max_files_changed`, `max_diff_lines`, `max_review_iterations`, `max_quality_fix_rounds`, and `max_test_retries_per_unit` stop the loop with a blocker when reached.
 - Docs impact gate: quality is refused until `docs-impact-reviewer` returns `no-docs-needed`; `docs-needed` means update the named docs and rerun the review.
-- Spec gate: `record-spec-merge` mechanically checks the baseline against the delta (ADDED/MODIFIED titles present, REMOVED titles gone) before implementation review opens.
+- Spec gate: `record-spec-merge` compares complete normalized ADDED/MODIFIED requirement blocks, rejects duplicate titles, and confirms REMOVED titles are gone.
 - Scale guard: the small-scale `risk_review` skip is refused when the change set touches dependency manifests, migrations, SQL, CI/CD, Docker, keys, or auth/security paths.
 - Local quality gate through `ai-code-quality-gate` (bundled fallback when absent); configured profile gates always remain required, and `run-quality --require` can only add gates.
 - PR and GitHub Actions gate; PR evidence must point to the same GitHub repository as local `origin`.
@@ -723,26 +783,62 @@ The loop does not rely on a Git `pre-commit` hook. Its hooks are harness-enforce
 ```text
 codex-dev-loop/
   VERSION
+  pyproject.toml
+  requirements-dev.txt
   SKILL.md
   adapters/claude-code/SKILL.md
   agents/openai.yaml
   scripts/
     configure_dev_loop.py
     dev_loop_harness.py
+    forward_test.py
+    dev_loop_core/
+      cli.py
+      settings.py
+      workspace.py
+      specs.py
+      validation.py
+      commands_loop.py
+      commands_standalone.py
+      parser.py
     test_gate.py
     quality_gate_fallback.py
     self_test.py
+    legacy_self_test.py
+    tests/
     validate_dev_loop_artifacts.py
   references/
+    full-loop-workflow.md
     artifact-templates.md
     git-pr-flow.md
     github-actions-cloud.md
     subagent-review-loop.md
     tdd-parallel-units.md
     spec-baseline.md
+    evidence-contracts.md
   docs/sponsor.md
   assets/wechat-pay-qr.jpg
 ```
+
+### Maintenance And Validation
+
+Install the locked test dependency, then run the fast and subprocess-backed integration suites separately:
+
+```bash
+python -m pip install -r requirements-dev.txt
+python -m pytest -q -m "not slow"
+python -m pytest -q -m slow
+python scripts/validate_skill_package.py
+```
+
+GitHub Actions runs the same checks on Windows, Linux, and macOS with Python 3.11 and 3.13. For real agent behavior, prepare an isolated case, hand its neutral printed prompt to a fresh agent with no parent conversation context, and evaluate the raw evidence afterward:
+
+```bash
+python scripts/forward_test.py prepare --case commit --out .tmp/forward-commit
+python scripts/forward_test.py evaluate --case commit --repo .tmp/forward-commit/repo
+```
+
+The `planning` case verifies a no-code planning-only boundary. The `commit` case verifies real TDD, independent reviews, quality, Git, no-push/no-PR behavior, and archive completion.
 
 ### Permissions
 
@@ -779,7 +875,3 @@ The WeChat Pay QR image in `assets/wechat-pay-qr.jpg` is a maintainer-provided s
 ### License
 
 Code and documentation are released under the MIT License, except where noted for sponsorship assets.
-
-
-
-

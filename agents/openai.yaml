@@ -1,4 +1,4 @@
 interface:
   display_name: "Codex Dev Loop"
-  short_description: "Automate design review, coding, tests, quality gates, and PRs"
-  default_prompt: "Use $codex-dev-loop to turn a Notion page or Markdown spec into reviewed code, tests, quality gates, commit, and PR."
+  short_description: "Run a guarded multi-unit development pipeline through PR"
+  default_prompt: "Use $codex-dev-loop for this standard, multi-module, high-risk, or explicitly full-pipeline change; clarify requirements, review the plan, implement test-first, run quality gates, and stop after opening the PR."

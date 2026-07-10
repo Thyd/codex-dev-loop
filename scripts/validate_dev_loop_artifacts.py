@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """Validate Codex dev loop artifact presence and review decisions."""
 
 from __future__ import annotations
@@ -18,6 +18,14 @@ REQUIRED_FILES = [
     "development-plan.md",
     "spec-delta.md",
     "decision-log.md",
+]
+
+PLAN_ONLY_FILES = [
+    "technical-design.md",
+    "test-plan.md",
+    "risk-analysis.md",
+    "development-plan.md",
+    "spec-delta.md",
 ]
 
 FINAL_FILES = [
@@ -58,10 +66,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--workspace", default=".", help="Workspace directory for harness-backed validation.")
     parser.add_argument("--require-reviews", action="store_true", help="Require passing reviews appropriate to the automation level.")
     parser.add_argument("--require-final", action="store_true", help="Require final records appropriate to the automation level.")
+    parser.add_argument("--profile", choices=["full", "plan-only"], default="full", help="Artifact contract to validate.")
     return parser.parse_args()
 
 
 def use_harness_validation(args: argparse.Namespace, root: Path) -> int | None:
+    if args.profile == "plan-only":
+        return None
     state_path = root / "loop-state.json"
     if not state_path.exists() and not args.require_reviews and not args.require_final:
         return None
@@ -85,7 +96,8 @@ def main() -> int:
     if not root.exists():
         findings.append(f"Missing artifact directory: {root}")
     else:
-        for name in REQUIRED_FILES:
+        required_files = PLAN_ONLY_FILES if args.profile == "plan-only" else REQUIRED_FILES
+        for name in required_files:
             path = root / name
             if not path.exists():
                 findings.append(f"Missing required artifact: {path}")
@@ -95,7 +107,9 @@ def main() -> int:
                 if heading not in text:
                     findings.append(f"{path} missing heading or field: {heading}")
             if name == "source.md":
-                if not section_has_content(text, "## Goal") or not section_has_content(text, "## Acceptance Criteria"):
+                if not any(section_has_content(text, heading) for heading in dev_loop_harness.GOAL_HEADINGS) or not any(
+                    section_has_content(text, heading) for heading in dev_loop_harness.ACCEPTANCE_HEADINGS
+                ):
                     findings.append(f"{path} must contain non-empty Goal and Acceptance Criteria sections")
             elif name in {"technical-design.md", "test-plan.md", "risk-analysis.md"}:
                 headings = [heading for heading in REQUIRED_HEADINGS.get(name, []) if heading.startswith("##")]

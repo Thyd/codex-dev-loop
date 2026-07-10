@@ -1,6 +1,6 @@
 ---
 name: dev-ship
-description: Turn a set of local changes into a pull request — verify the floor gates (feature branch, current green test evidence), then create the branch, commit, push, open a PR with an evidence-linked description, and watch the required CI checks. Use to ship a small change that already has green test evidence (typically after dev-tdd). Do NOT use to bypass review on risky changes (escalate to the full codex-dev-loop), and never commit directly to a protected branch.
+description: Turn a set of local changes into a pull request — create a feature branch, verify every declared behavior has current green evidence, commit, push, open a PR with an evidence-linked description, and watch required CI checks. Use to ship a low-risk change that already has green test evidence, typically after dev-tdd. Do NOT use for sensitive-path or high-risk work, and never commit directly to a protected branch.
 ---
 
 # dev-ship — 交付 PR（可组合子 skill）
@@ -9,6 +9,8 @@ description: Turn a set of local changes into a pull request — verify the floo
 
 约定：`<core>` = codex-dev-loop 主 skill 目录下的 `scripts/dev_loop_harness.py`。
 
+开始前运行 `python <core> version --require 0.7.0`；版本不足或核心缺失时停止并更新主 skill。
+
 ## 何时用 / 何时不用
 
 - **用**：一个已有绿测证据的小改动要发 PR（通常紧跟 `dev-tdd`）。
@@ -16,19 +18,21 @@ description: Turn a set of local changes into a pull request — verify the floo
 
 ## 底线闸门（发 PR 前必过）
 
+Create or switch to the feature branch first, then run the gate with every behavior label from this change:
+
 ```bash
-python <core> ship-check
+python <core> ship-check --label <behavior-1> [--label <behavior-2>]
 ```
 
-`ship-check` 强制：① 在 git 仓库内；② 当前不在保护分支（`main`/`master`/`develop`/`release/*`）；③ TDD ledger 里有一条**针对当前代码树**的绿测证据（工作区指纹匹配）。改了代码就要重跑绿测——PR 只在「验证过绿」的树上开。
+`ship-check` 强制：① 在 git 仓库内；② 当前不在保护分支；③ 未触及敏感路径；④ 每个 `--label` 的最新记录都是**针对当前代码树**的绿测。改了代码就要重跑本次变更的全部 label。
 
 若无绿证据：先用 `dev-tdd`（或 `standalone-test --mode regression-only --stage green`，用于已被现有测试覆盖的非行为改动）补一条绿证据。
 
 ## 流程
 
-1. `ship-check` 通过。
+1. 创建特性分支（若还没在特性分支上）。
 2. 若改动含规格变更：先用 `dev-spec` 动作 C 把 `specs/` 更新好并 `check-spec-delta` 通过——它会随代码进同一个 PR。
-3. 创建特性分支（若还没在特性分支上）。
+3. 用本次变更的全部行为 label 运行 `ship-check`。
 4. 提交：规范化 commit message。
 5. push 分支。
 6. 用 `gh` 开 PR，PR 描述包含：改了什么、绿测证据路径（`.codex/evidence/tdd/ledger.json`）、（如有）规格 delta 摘要、（如有）`dev-review` 评审结论。

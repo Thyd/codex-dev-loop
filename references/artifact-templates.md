@@ -1,5 +1,17 @@
 # Artifact Templates
 
+## Contents
+
+- [clarification-log.md](#clarification-logmd)
+- [technical-design.md](#technical-designmd)
+- [test-plan.md](#test-planmd)
+- [risk-analysis.md](#risk-analysismd)
+- [development-plan.md](#development-planmd)
+- [spec-delta.md](#spec-deltamd)
+- [decision-log.md](#decision-logmd)
+- [final-report.md](#final-reportmd)
+- [pr-body.md](#pr-bodymd)
+
 Use these headings for `.codex/dev-loop/` records.
 
 ## clarification-log.md
