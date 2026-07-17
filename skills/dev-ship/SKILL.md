@@ -1,6 +1,6 @@
 ---
 name: dev-ship
-description: Turn a set of local changes into a pull request — create a feature branch, verify every declared behavior has current green evidence, commit, push, open a PR with an evidence-linked description, and watch required CI checks. Use to ship a low-risk change that already has green test evidence, typically after dev-tdd. Do NOT use for sensitive-path or high-risk work, and never commit directly to a protected branch.
+description: Turn a set of local changes into a pull request — create a feature branch, verify every declared behavior or non-code artifact has current green evidence, commit, push, open a PR with an evidence-linked description, and watch required CI checks. Use to ship a low-risk change that already has relevant green validation evidence, typically after dev-tdd or a lightweight artifact check. Do NOT use for sensitive-path or high-risk work, and never commit directly to a protected branch.
 ---
 
 # dev-ship — 交付 PR（可组合子 skill）
@@ -9,24 +9,24 @@ description: Turn a set of local changes into a pull request — create a featur
 
 约定：`<core>` = codex-dev-loop 主 skill 目录下的 `scripts/dev_loop_harness.py`。
 
-开始前运行 `python <core> version --require 0.7.0`；版本不足或核心缺失时停止并更新主 skill。
+开始前运行 `python <core> version --require 0.7.1`；版本不足或核心缺失时停止并更新主 skill。
 
 ## 何时用 / 何时不用
 
-- **用**：一个已有绿测证据的小改动要发 PR（通常紧跟 `dev-tdd`）。
+- **用**：一个已有相关绿验证证据的小改动要发 PR（通常紧跟 `dev-tdd` 或轻量资产校验）。
 - **不用**：想绕过评审强推有风险的改动（升级到完整 `codex-dev-loop`）；绝不直接提交到保护分支。
 
 ## 底线闸门（发 PR 前必过）
 
-Create or switch to the feature branch first, then run the gate with every behavior label from this change:
+Create or switch to the feature branch first, then run the gate with every behavior or artifact-validation label from this change:
 
 ```bash
 python <core> ship-check --label <behavior-1> [--label <behavior-2>]
 ```
 
-`ship-check` 强制：① 在 git 仓库内；② 当前不在保护分支；③ 未触及敏感路径；④ 每个 `--label` 的最新记录都是**针对当前代码树**的绿测。改了代码就要重跑本次变更的全部 label。
+`ship-check` 强制：① 在 git 仓库内；② 当前不在保护分支；③ 未触及敏感路径；④ 每个 `--label` 的最新记录都是**针对当前树**的绿色验证。改了文件就要重跑本次变更的全部 label。
 
-若无绿证据：先用 `dev-tdd`（或 `standalone-test --mode regression-only --stage green`，用于已被现有测试覆盖的非行为改动）补一条绿证据。
+若无绿证据：行为改动先用 `dev-tdd`；没有新增可执行行为的改动用 `standalone-test --mode regression-only --stage green` 记录现有测试或直接资产/契约检查。
 
 ## 流程
 
@@ -35,7 +35,7 @@ python <core> ship-check --label <behavior-1> [--label <behavior-2>]
 3. 用本次变更的全部行为 label 运行 `ship-check`。
 4. 提交：规范化 commit message。
 5. push 分支。
-6. 用 `gh` 开 PR，PR 描述包含：改了什么、绿测证据路径（`.codex/evidence/tdd/ledger.json`）、（如有）规格 delta 摘要、（如有）`dev-review` 评审结论。
+6. 用 `gh` 开 PR，PR 描述包含：改了什么、绿色验证证据路径（`.codex/evidence/tdd/ledger.json`）、（如有）规格 delta 摘要、（如有）`dev-review` 评审结论。
 7. 盯 GitHub Actions 必需检查（`gh pr checks`）；失败或缺失就停下报告。
 
 ## 外部服务策略（与主 skill 一致）

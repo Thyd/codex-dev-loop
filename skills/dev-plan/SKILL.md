@@ -9,7 +9,7 @@ description: Produce the planning artifacts for a change — technical design, t
 
 约定：`<core-dir>` = codex-dev-loop 主 skill 目录（Codex 默认 `~/.codex/skills/codex-dev-loop`）。
 
-开始前运行 `python <core-dir>/scripts/dev_loop_harness.py version --require 0.7.0`；版本不足或核心缺失时停止并更新主 skill。
+开始前运行 `python <core-dir>/scripts/dev_loop_harness.py version --require 0.7.1`；版本不足或核心缺失时停止并更新主 skill。
 
 ## 何时用 / 何时不用
 

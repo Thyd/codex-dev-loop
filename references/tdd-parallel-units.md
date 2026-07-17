@@ -13,7 +13,9 @@
 Every `## Unit dev-*` carries a `- TDD:` field in `development-plan.md`:
 
 - `red` (default): a recorded failing test is required before any green run counts.
-- `regression-only`: existing tests already cover the change (pure refactor). The plan must justify this and plan review must approve it; the harness rejects any other value.
+- `regression-only`: the unit adds no executable behavior and existing tests or
+  a direct artifact/contract check cover it. The plan must justify this and
+  plan review must approve it; the harness rejects any other value.
 
 Red stage rules:
 
@@ -25,6 +27,9 @@ Red stage rules:
 Green stage rules:
 
 - The harness refuses a green run for a `red`-mode unit without current red evidence.
+- Use the smallest command that proves the unit acceptance criteria under the
+  reviewed validation scope. Do not default to the repository-wide suite when
+  a targeted or impacted command covers the change.
 - After a green pass, the harness runs scope-check against the current diff. The unit is not allowed forward if changed files are outside declared scope, sensitive paths need scale/risk escalation, dependency manifests are undeclared, or formatting noise is broad.
 - The unit is complete when its latest attempt is a green pass whose fingerprints match the current plan and workspace and scope-check has passed.
 
@@ -48,7 +53,10 @@ git worktree add ../wt-dev-002 -b <loop-branch>-dev-002
 3. Serialize all harness calls yourself. Subagents must never write loop state; two concurrent `record-test` calls can race on `loop-state.json`.
 4. After each unit finishes: record its evidence, merge the unit branch back into the loop branch, resolve conflicts, remove the worktree (`git worktree remove ../wt-dev-002`).
 5. After ALL unit branches and spec baseline changes are merged, run and record `merge-integrator` against the current merged tree.
-6. Run `verify-units` in the main workspace. Worktree evidence is interim: its workspace fingerprint will not match the merged tree, and the harness refuses `verify-units` until the merge-integrator review passes.
+6. Run `verify-units` in the main workspace. It repeats each unit's selected
+   command, not an implicit full suite. Worktree evidence is interim: its
+   workspace fingerprint will not match the merged tree, and the harness
+   refuses `verify-units` until the merge-integrator review passes.
 
 Manual preflight is available at any point:
 

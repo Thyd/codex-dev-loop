@@ -9,7 +9,7 @@ description: Manage a repository's living specification baseline under specs/ �
 
 约定：`<core-dir>` = codex-dev-loop 主 skill 目录；`<core>` = `<core-dir>/scripts/dev_loop_harness.py`。基线格式与 delta 格式见 `<core-dir>/references/spec-baseline.md`。
 
-开始前运行 `python <core> version --require 0.7.0`；版本不足或核心缺失时停止并更新主 skill。
+开始前运行 `python <core> version --require 0.7.1`；版本不足或核心缺失时停止并更新主 skill。
 
 ## 何时用 / 何时不用
 

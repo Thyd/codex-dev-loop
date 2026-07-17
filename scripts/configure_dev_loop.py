@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import sys
 from pathlib import Path
 
 
@@ -190,12 +191,20 @@ def print_summary(config: dict, output: Path) -> None:
     )
 
 
+def make_stdout_encoding_safe() -> None:
+    """Prevent localized summaries from crashing on legacy Windows encodings."""
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if callable(reconfigure):
+        reconfigure(errors="backslashreplace")
+
+
 def main() -> int:
     args = parse_args()
     output = Path(args.output).expanduser()
     config = build_config(args, output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    make_stdout_encoding_safe()
     print_summary(config, output)
     return 0
 

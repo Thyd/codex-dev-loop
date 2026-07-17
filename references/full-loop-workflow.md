@@ -5,6 +5,7 @@
 - [Preflight and configuration](#preflight-and-configuration)
 - [Intake and requirements gate](#intake-and-requirements-gate)
 - [Scale and planning](#scale-and-planning)
+- [Adaptive validation scope](#adaptive-validation-scope)
 - [Implementation and TDD](#implementation-and-tdd)
 - [Spec, review, and quality](#spec-review-and-quality)
 - [Git, PR, and cloud checks](#git-pr-and-cloud-checks)
@@ -72,12 +73,27 @@ decision log. Declare expected file scope and split work into independently
 testable `dev-*` units with dependencies and one of:
 
 - `TDD: red` — record a valid failing test before green.
-- `TDD: regression-only` — pure refactor already covered by existing tests;
-  justify it in the reviewed plan.
+- `TDD: regression-only` — no new executable behavior; existing tests or a
+  direct artifact/contract check cover the change. Justify it in the reviewed
+  plan.
 
 Run a fresh `plan-reviewer` using the inputs and schema in
 [subagent-review-loop.md](subagent-review-loop.md). Any planning-artifact edit
 invalidates the review fingerprint and requires another review.
+
+## Adaptive Validation Scope
+
+Read [validation-selection.md](validation-selection.md). Choose `artifact`,
+`targeted`, `impacted`, or `full` independently of task scale and record the
+rationale, acceptance-criteria mapping, exact commands, and full-suite
+omissions in `test-plan.md`. A small task can still require `full` because it
+touches a sensitive shared surface; a standard task can use `impacted` when its
+dependency reach is well bounded.
+
+Use the narrowest credible command for each unit. Escalate when the diff grows,
+shared consumers appear, or failures escape the planned surface. Never run a
+full suite merely because it exists, and never skip all verification because a
+change is lightweight.
 
 ## Implementation And TDD
 
@@ -120,10 +136,13 @@ then fresh `implementation-reviewer`, `docs-impact-reviewer`, and required
 `.codex/quality-gate/subagent-alignment.md`.
 
 Run the configured quality gate; requirements are additive and cannot be
-weakened at the command line:
+weakened at the command line. When the reviewed scope is below `full`, override
+the fallback's repository-wide test autodetection with the selected final-tree
+command:
 
 ```bash
-python <skill-dir>/scripts/dev_loop_harness.py --root .codex/dev-loop run-quality
+python <skill-dir>/scripts/dev_loop_harness.py --root .codex/dev-loop \
+  run-quality --command "test=<selected final-tree verification command>"
 ```
 
 Use the companion quality skill when installed; otherwise the bundled fallback
@@ -185,4 +204,3 @@ review does not pass, a red test cannot prove missing behavior, retry or budget
 limits are reached, scope/spec reconciliation fails, architecture/security/
 data/compatibility risk needs a human decision, credentials are missing, a
 quality gate fails, or git/PR/cloud evidence cannot be completed.
-

@@ -9,7 +9,7 @@ description: Debug a failing test, crash, or wrong behavior by root cause, not b
 
 约定：`<core>` = codex-dev-loop 主 skill 目录下的 `scripts/dev_loop_harness.py`。
 
-开始前运行 `python <core> version --require 0.7.0`；版本不足或核心缺失时停止并更新主 skill。
+开始前运行 `python <core> version --require 0.7.1`；版本不足或核心缺失时停止并更新主 skill。
 
 ## 何时用 / 何时不用
 

@@ -50,9 +50,10 @@ def frontmatter_problem(path: Path) -> str:
         text = data.decode("utf-8")
     except UnicodeDecodeError as exc:
         return f"is not valid UTF-8: {exc}"
-    if not text.startswith("---\n"):
+    normalized_text = text.replace("\r\n", "\n").replace("\r", "\n")
+    if not normalized_text.startswith("---\n"):
         return "does not begin with YAML frontmatter"
-    parts = text.split("---\n", 2)
+    parts = normalized_text.split("---\n", 2)
     if len(parts) < 3:
         return "has unterminated YAML frontmatter"
     fields = {

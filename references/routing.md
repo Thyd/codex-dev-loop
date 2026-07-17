@@ -31,11 +31,15 @@
 │      评审方案或 diff ................. dev-review（单角色）
 │      只要方案不要实现 ............... dev-clarify(如需) → dev-plan → dev-review(plan)
 │      老仓库想引入规格管理 ........... dev-spec（bootstrap）
+│      仅替换图片/文案/静态资产 ......... 轻量资产通道：用 regression-only 记录
+│                                      完整性 + 引用 + 受影响界面/构建校验
+│                                      （默认不跑代码全量测试）
 │
 └─ ③ 要改代码 → 两步预检后选链：
        a. 需求清楚吗？不清楚 → 先 dev-clarify
        b. 是未知根因的故障吗？是 → dev-debug → dev-tdd
        c. python <core> guard-check + 估计单元数 / 是否要 PR
+       d. 按 validation-selection.md 选择 artifact / targeted / impacted / full
        │
        ├─ micro   1 单元、非敏感、不发 PR
        │          → dev-tdd
@@ -62,9 +66,9 @@
 | 任一 reviewer 给出 `block` | `dev-review` / loop 评审 |
 | diff 超出声明的文件 scope | 实现评审 |
 
-## 底线闸门集（任何链，含 micro，都不可省）
+## 底线闸门集（任何链，含轻量资产通道，都不可省）
 
-- **测试证据**：本次变更声明的每个 behavior label 都必须有针对当前树的最新绿测（`dev-tdd` 红绿，或诚实的 `regression-only`）。`dev-ship` 的 `ship-check --label ...` 会强制。
+- **验证证据**：代码行为的每个 behavior label 都必须有针对当前树的最新绿测（`dev-tdd` 红绿，或诚实的 `regression-only`）；非行为型资产变更必须有完整性、引用和受影响表面的校验证据。验证范围按 [validation-selection.md](validation-selection.md) 选择；不得把“不跑全量”变成“不验证”。`dev-ship` 的 `ship-check --label ...` 会强制代码行为证据。
 - **不碰保护分支**：`main`/`master`/`develop`/`release/*`。`ship-check` 会强制。
 - **变更留档**：证据落 `<evidence_dir>/`（默认 `.codex/evidence/`）。
 

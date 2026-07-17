@@ -1,7 +1,7 @@
 # Codex Dev Loop · 从需求到 PR 的自动开发 loop
 
 ![Skill](https://img.shields.io/badge/Skill-Codex%20%7C%20Claude%20Code-111111?style=flat-square)
-![Version](https://img.shields.io/badge/Version-v0.7.0-blue?style=flat-square)
+![Version](https://img.shields.io/badge/Version-v0.7.1-blue?style=flat-square)
 ![Quality Gate](https://img.shields.io/badge/Quality%20Gate-required-0A7CFF?style=flat-square)
 ![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-supported-2088FF?style=flat-square)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
@@ -14,7 +14,7 @@
 
 你可以把 `codex-dev-loop` 理解成一条给 AI 编码代理用的自动开发流水线（支持 Codex 与 Claude Code）。
 
-它做的事很直接：给它一份 Notion 页面、Markdown 需求，甚至只是一个模糊想法，它会先把需求聊清楚（记录澄清问答），和你确认任务规模（small / standard / large 三档闸门重量），再补齐技术方案、测试计划、风险分析、规格 delta 和开发计划；这些东西通过 Subagent 评审后，才开始写代码；每个开发单元先写失败测试再实现（TDD 红绿闸门，独立单元可在 git worktree 中并行）；实现后把规格 delta 合并进仓库的 `specs/` 规格基线，随同一个 PR 接受评审；最后必须跑测试、质量门、云端检查和 PR 级 review，才提交代码和创建 PR。
+它做的事很直接：给它一份 Notion 页面、Markdown 需求，甚至只是一个模糊想法，它会先把需求聊清楚（记录澄清问答），分别确认任务规模（small / standard / large 三档闸门重量）和验证范围（artifact / targeted / impacted / full），再补齐技术方案、测试计划、风险分析、规格 delta 和开发计划；这些东西通过 Subagent 评审后，才开始写代码；每个可执行行为单元先写失败测试再实现（TDD 红绿闸门，独立单元可在 git worktree 中并行），非行为型资产变更则运行直接资产/契约检查；实现后把规格 delta 合并进仓库的 `specs/` 规格基线，随同一个 PR 接受评审；最后运行与影响面匹配的测试和质量门、云端检查及 PR 级 review，才提交代码和创建 PR。
 
 目标很明确：让 AI 自动推进开发，同时让澄清、TDD、评审、质量门、规格沉淀和 PR 检查持续拦住风险。
 
@@ -52,7 +52,7 @@ python ~/.codex/skills/codex-dev-loop/scripts/dev_loop_harness.py --root .codex/
 python ~/.codex/skills/codex-dev-loop/scripts/dev_loop_harness.py --root .codex/dev-loop --workspace . migrate-evidence
 ```
 
-0.7.0 保留原 CLI 路径、子命令、阶段语义和证据 schema，并将内部结构升级为精简主 SKILL、模块化 harness、pytest 测试与三平台 CI。
+0.7.1 新增独立于任务规模的自适应验证范围：静态资产、定向、受影响面和全量四档；轻量图片/文案替换默认运行直接资产校验，而不是代码全量测试。0.7.0 的 CLI 路径、子命令、阶段语义和证据 schema 保持兼容。
 
 初次使用前，运行 4 问配置：
 
@@ -128,13 +128,13 @@ python ~/.codex/skills/codex-dev-loop/scripts/install_skills.py --only dev-tdd,d
 - 希望 AI 自动写代码，但又不想绕过 TDD、lint、typecheck、test 和安全扫描。
 - 希望每次开发都走新分支、提交、PR 和 GitHub Actions，规格变更随同一个 PR 沉淀进 `specs/` 基线。
 - 希望在写代码前，让 Subagent 先审技术方案、测试计划、风险和规格 delta。
-- 小修小补不想扛全套流程：选 `small` 档，harness 会在敏感路径（依赖、迁移、CI、安全文件）被改动时强制升档。
+- 小行为改动不想扛全套流程：选 `small` 档；仅替换图片、文案或静态资产时走轻量资产校验，默认不跑代码全量测试。harness 会在敏感路径（依赖、迁移、CI、安全文件）被改动时强制升档。
 - 希望把自动开发过程留下记录，方便回溯。
 
 不适合：
 
 - 不允许 Codex 读写文件、运行命令或操作 git。建议先使用“只做规划”模式，等方案确认后再开放执行权限。
-- 没有测试，也不准备补测试的仓库。TDD 闸门要求每个单元先有失败测试；完全不想写测试的仓库无法走通。
+- 有可执行行为改动，却没有测试也不准备补测试的仓库。纯资产变更可以改用完整性、引用和受影响界面/构建校验。
 - 需要直接改生产环境、数据库或线上配置的任务。建议拆成设计评审和人工执行两步，先让 loop 输出风险和迁移方案。
 - 需要绕过质量门、强行合并或“先上再说”的任务。建议降低任务范围或调整质量门配置，不建议关闭所有 gate。
 
@@ -143,11 +143,11 @@ python ~/.codex/skills/codex-dev-loop/scripts/install_skills.py --only dev-tdd,d
 | 阶段 | 它会做的事 | 不通过时会怎样 |
 |---|---|---|
 | 需求澄清 | 读取 Markdown / Notion / 草稿，需求不清就提问，问答记入澄清日志 | Goal 或验收标准为空就不放行规划 |
-| 规模确认 | 和你确认 small / standard / large 档位，决定闸门重量 | 敏感路径被改动时 small 强制升档 |
+| 规模与验证确认 | 分别确认 small / standard / large 流程重量和 artifact / targeted / impacted / full 验证范围 | 敏感路径或不可界定的影响面会强制升档 |
 | 方案补齐 | 生成技术方案、文件范围、测试计划、风险分析、规格 delta、开发计划 | 发现架构风险就停止 |
 | Subagent 评审 | 让 plan / implementation / risk 三类 reviewer 交叉检查 | 评审不通过就修改后重审 |
 | TDD 开发 | 每个单元先记录失败的红测试，再实现到绿；独立单元可在 worktree 并行 | 没有红证据，绿测试不计入 |
-| 测试门 | 每个单元都要跑测试，失败次数按初始配置控制 | 达到配置阈值就停止 |
+| 验证门 | 每个单元运行能覆盖其影响面的最小可信检查；全量测试只在风险、影响面或项目策略要求时执行 | 达到配置阈值就停止 |
 | 规格沉淀 | 把规格 delta 合并进 `specs/` 基线并机械校验 | 基线与 delta 不一致就不放行评审 |
 | 本地质量门 | 强制调用 `ai-code-quality-gate`（或内置 fallback），严格度按初始配置控制 | 质量门失败就停止 |
 | PR 阶段 | 创建分支、提交、推送、开 PR | 缺权限或 token 就停止 |
@@ -158,7 +158,7 @@ python ~/.codex/skills/codex-dev-loop/scripts/install_skills.py --only dev-tdd,d
 
 1. 你提供一个需求：Notion 页面、本地 Markdown，或只是一个想法（`--draft`）。
 2. 初始化 `.codex/dev-loop/` 执行目录，loop 从 intake 阶段开始。
-3. 需求不清就提问澄清，问答记入 `clarification-log.md`；和你确认任务规模（small / standard / large）。
+3. 需求不清就提问澄清，问答记入 `clarification-log.md`；分别确认任务规模（small / standard / large）和验证范围（artifact / targeted / impacted / full）。
 4. 生成这些规划文件：
    - `technical-design.md`
    - `test-plan.md`
@@ -340,11 +340,11 @@ harness 会执行这些配置：不允许的来源类型会在 `init --source-ty
 
 - 澄清闸门：`source.md` 的 Goal 和验收标准非空才允许进入规划；不清楚就留在 intake 阶段提问。
 - 规划评审闸门：技术方案、测试计划、风险分析、规格 delta 必须通过 Subagent 评审。
-- TDD 闸门：`- TDD: red` 单元没有失败的红测试证据，绿测试不予记录；`regression-only` 豁免必须写进计划并由 plan-reviewer 审批。
-- 测试闸门：每个开发单元都要跑测试，结果写入记录；worktree 内的证据只是过程证据，合并后必须 `verify-units` 对最终代码树复验。
+- TDD 闸门：`- TDD: red` 单元没有失败的红测试证据，绿测试不予记录；无新增可执行行为时可用 `regression-only` 记录现有测试或直接资产/契约检查，但必须写进计划并由 plan-reviewer 审批。
+- 验证闸门：每个开发单元都要运行计划中与影响面匹配的检查，结果写入记录；worktree 内的证据只是过程证据，合并后必须 `verify-units` 用各单元已选命令对最终代码树复验。
 - 规格闸门：`record-spec-merge` 比较完整的 ADDED/MODIFIED requirement 正文、拒绝重复标题，并确认 REMOVED 标题消失。
 - 规模护栏：small 档跳过 risk_review 前，harness 检查变更集是否触及依赖清单、迁移、SQL、CI/CD、Docker、密钥或 auth/security 路径，命中即拒绝跳过。
-- 质量闸门：调用 `ai-code-quality-gate`（未安装时用内置 fallback），已配置 profile gate 始终强制执行，`run-quality --require` 只能追加 gate。
+- 质量闸门：调用 `ai-code-quality-gate`（未安装时用内置 fallback），已配置 profile gate 类别始终强制执行；`run-quality --require` 只能追加 gate，`--command "test=<命令>"` 可按已评审的影响面收窄测试命令。
 - PR 闸门：检查 GitHub Actions 并确认 PR 仓库与本地 `origin` 一致；第三方 PR AI review 只在 strict profile 强制。
 - 云端检查闸门：required check 用规范化后的精确名称匹配，或匹配已知扫描器别名（如 `SonarCloud Code Analysis` 可满足 `sonar`）；非必需的可选检查失败不会阻断。
 - 指纹闸门：规划、评审、测试、规格合并和质量报告都绑定当前文件状态，防止复用旧报告。
@@ -481,7 +481,7 @@ README 的表达结构参考了 [op7418/guizang-ppt-skill](https://github.com/op
 
 `codex-dev-loop` is an autonomous development loop for AI coding agents (Codex and Claude Code).
 
-Give it a Notion page, a local Markdown spec, or just a rough idea. It first clarifies the requirement with you (Q&A recorded in a clarification log), agrees on a task scale (`small` / `standard` / `large` gate weight), then turns the input into a technical design, test plan, risk analysis, spec delta, and development plan. Subagents review those planning artifacts before implementation starts. Every unit is built test-first (red/green TDD gates; red failures are validated for the right reason; independent units can run in parallel git worktrees). Parallel worktree merges require a `merge-integrator` pass before final `verify-units`. After coding, the spec delta is merged into the repository's living `specs/` baseline on the same branch, and the loop runs tests, local quality gates, cloud checks, and PR-level review before the change is allowed to move forward.
+Give it a Notion page, a local Markdown spec, or just a rough idea. It first clarifies the requirement with you (Q&A recorded in a clarification log), agrees separately on task scale (`small` / `standard` / `large` gate weight) and validation scope (`artifact` / `targeted` / `impacted` / `full`), then turns the input into a technical design, test plan, risk analysis, spec delta, and development plan. Subagents review those planning artifacts before implementation starts. Every executable behavior unit is built test-first (red/green TDD gates; red failures are validated for the right reason; independent units can run in parallel git worktrees), while non-behavior asset changes use direct artifact or contract checks. Parallel worktree merges require a `merge-integrator` pass before final `verify-units`. After coding, the spec delta is merged into the repository's living `specs/` baseline on the same branch, and the loop runs impact-matched validation, local quality gates, cloud checks, and PR-level review before the change is allowed to move forward.
 
 The goal is straightforward: let the agent move development forward while clarification, TDD, reviews, quality gates, spec consolidation, and PR checks keep risk under control.
 
@@ -519,7 +519,7 @@ python ~/.codex/skills/codex-dev-loop/scripts/dev_loop_harness.py --root .codex/
 python ~/.codex/skills/codex-dev-loop/scripts/dev_loop_harness.py --root .codex/dev-loop --workspace . migrate-evidence
 ```
 
-Version 0.7.0 preserves the CLI path, command names, phase semantics, and evidence schema while upgrading the internals to a slim main SKILL, modular harness, pytest suites, and three-platform CI.
+Version 0.7.1 adds validation scope independently of task scale: artifact, targeted, impacted, and full. Lightweight image or copy replacements now default to direct artifact checks instead of the full code suite, while preserving the 0.7.0 CLI paths, command names, phase semantics, and evidence schema.
 
 Before the first run, configure the four core preferences:
 
@@ -605,11 +605,11 @@ Bad fit:
 | Stage | Action | Failure Behavior |
 |---|---|---|
 | Intake & clarification | Read Markdown / Notion / draft input; interview the user, then run requirements-reviewer | Planning refused while Goal/Acceptance Criteria are empty or any requirement lacks observability, failure conditions, boundaries, non-goals, or test mapping |
-| Scale agreement | Confirm `small` / `standard` / `large` gate weight with the user | `small` force-escalates when sensitive paths change |
+| Scale and validation agreement | Confirm workflow weight and `artifact` / `targeted` / `impacted` / `full` validation scope separately | Sensitive paths or unbounded impact force escalation |
 | Planning | Produce design, file scope, test plan, risk analysis, spec delta, and development plan | Stop on architecture risk |
 | Subagent review | Cross-check requirements, plan, implementation approach, and risk | Revise and review again |
 | TDD implementation | Record failing red evidence, then implement to green; independent units in parallel worktrees | Green runs are refused without red evidence; worktree merges require `merge-integrator` before `verify-units` |
-| Test gate | Run tests for each unit; retry budget follows first-run config | Stop after `max_test_retries_per_unit` |
+| Validation gate | Run the smallest credible checks for each unit; use the full suite only when impact, risk, policy, or the user requires it | Stop after `max_test_retries_per_unit` |
 | Budget/time-box | Track planned units, changed files, diff lines, review iterations, and quality fix rounds | Stop and report when a configured budget is reached |
 | Spec consolidation | Merge the spec delta into `specs/` and validate mechanically | Reviews blocked until baseline matches the delta |
 | Docs impact review | Check README, docs/, API reference, changelog, examples, env/config docs, migration notes, and user-facing copy | Quality gate blocked until `docs-impact-reviewer` returns `no-docs-needed` |
@@ -622,7 +622,7 @@ Bad fit:
 
 1. Provide a Notion page, a local Markdown spec, or just an idea (`--draft`).
 2. The agent initializes `.codex/dev-loop/`; the loop starts in the intake phase.
-3. Unclear requirements trigger clarification questions (recorded in `clarification-log.md`); the task scale is agreed with you.
+3. Unclear requirements trigger clarification questions (recorded in `clarification-log.md`); task scale and validation scope are agreed with you separately.
 4. The agent creates planning artifacts:
    - `technical-design.md`
    - `test-plan.md`
@@ -637,7 +637,7 @@ Bad fit:
 9. The spec delta is merged into the repository `specs/` baseline and validated by `record-spec-merge`.
 10. If worktree evidence exists, `merge-integrator` reviews the merged tree for cross-unit interaction risk before `verify-units` re-runs every unit against the final tree.
 11. `docs-impact-reviewer` decides whether README, docs, API reference, changelog, examples, env/config docs, migration notes, or user-facing copy must be updated; `docs-needed` blocks until fixed and re-reviewed.
-12. The local `ai-code-quality-gate` (or the bundled fallback) runs lint, typecheck, tests, Semgrep, CodeQL, Sonar, Qodana, or the checks available in the target repository.
+12. The local `ai-code-quality-gate` (or the bundled fallback) runs the configured gate categories with the reviewed impact-matched test command; repository-wide tests are reserved for `full` validation or mandatory policy.
 13. The agent creates a new branch and commits; in `commit_only` mode, it records the commit and completes.
 14. When automation scope allows it, the agent pushes, opens a PR (spec baseline updates reviewed in the same PR), and waits for GitHub Actions; strict also waits for PR-level AI review.
 15. The loop writes execution records under `.codex/dev-loop/` and archives them to `.codex/dev-loop-archive/` after completion.
@@ -767,13 +767,13 @@ The loop does not rely on a Git `pre-commit` hook. Its hooks are harness-enforce
 - Red-test gate: `- TDD: red` units need a failing red run that passes red-test-validator; infrastructure failures and ambiguous snapshot drift do not unlock green.
 - Scope-drift gate: every unit green, worktree green record, pre-spec-merge, and pre-quality/commit path runs scope-check against `technical-design.md` / `development-plan.md`; undeclared files, sensitive paths, dependency manifests, or broad formatting noise block progress.
 - Planning review gate (now including the spec delta).
-- TDD gate: `- TDD: red` units need recorded failing red evidence before green counts; `regression-only` waivers must be in the plan and approved by plan review.
-- Unit test gate; worktree evidence is interim, `merge-integrator` must pass on the merged tree, and `verify-units` must re-verify it.
+- TDD gate: `- TDD: red` units need recorded failing red evidence before green counts; when no executable behavior is added, `regression-only` may record existing tests or a direct artifact/contract check, but the waiver must be in the plan and approved by plan review.
+- Impact-matched validation gate; worktree evidence is interim, `merge-integrator` must pass on the merged tree, and `verify-units` must repeat each unit's selected command.
 - Budget/time-box gate: `max_units`, `max_files_changed`, `max_diff_lines`, `max_review_iterations`, `max_quality_fix_rounds`, and `max_test_retries_per_unit` stop the loop with a blocker when reached.
 - Docs impact gate: quality is refused until `docs-impact-reviewer` returns `no-docs-needed`; `docs-needed` means update the named docs and rerun the review.
 - Spec gate: `record-spec-merge` compares complete normalized ADDED/MODIFIED requirement blocks, rejects duplicate titles, and confirms REMOVED titles are gone.
 - Scale guard: the small-scale `risk_review` skip is refused when the change set touches dependency manifests, migrations, SQL, CI/CD, Docker, keys, or auth/security paths.
-- Local quality gate through `ai-code-quality-gate` (bundled fallback when absent); configured profile gates always remain required, and `run-quality --require` can only add gates.
+- Local quality gate through `ai-code-quality-gate` (bundled fallback when absent); configured profile gate categories remain required, `run-quality --require` can only add gates, and a reviewed `--command "test=<command>"` override may narrow test scope.
 - PR and GitHub Actions gate; PR evidence must point to the same GitHub repository as local `origin`.
 - Cloud check gate; required checks match by exact canonical name or known scanner aliases (for example `SonarCloud Code Analysis` satisfies `sonar`), while unrelated optional check failures do not block the loop.
 - Fingerprint gate that prevents stale reports (plans, reviews, tests, spec merges, quality) from being reused.

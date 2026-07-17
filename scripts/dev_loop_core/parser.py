@@ -211,7 +211,7 @@ def build_parser() -> argparse.ArgumentParser:
     standalone_test.add_argument("--label", required=True, help="Identifier for the behavior under test.")
     standalone_test.add_argument("--command", required=True)
     standalone_test.add_argument("--stage", choices=sorted(TEST_STAGES), default="green")
-    standalone_test.add_argument("--mode", choices=sorted(TDD_MODES), default="red", help="red enforces red-before-green; regression-only records green for changes covered by existing tests.")
+    standalone_test.add_argument("--mode", choices=sorted(TDD_MODES), default="red", help="red enforces red-before-green; regression-only records green for changes with no new executable behavior, using existing tests or a direct artifact/contract check.")
     standalone_test.add_argument("--expected-failure", default="", help="For --stage red, text describing the intended missing behavior that should appear in the failure log.")
     standalone_test.add_argument("--timeout", type=int, default=600)
     standalone_test.add_argument("--test-gate-script", default="")
