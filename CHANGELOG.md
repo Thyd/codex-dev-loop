@@ -13,6 +13,7 @@
 - Made unit and final-tree verification use the reviewed smallest credible command, and documented `run-quality --command "test=<command>"` as the way to prevent repository-wide test autodetection for bounded changes.
 - Expanded `regression-only` semantics and shipping evidence to cover direct artifact or contract checks when no executable behavior is added.
 - Made package frontmatter validation newline-agnostic so CRLF checkouts pass on Windows while BOM and required-field checks remain fail-closed.
+- Made localized first-run summaries tolerate legacy Windows output encodings instead of aborting after writing the configuration file.
 
 ### Compatibility
 
