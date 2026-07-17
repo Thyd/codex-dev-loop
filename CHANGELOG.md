@@ -12,6 +12,7 @@
 - Made task scale control workflow weight while validation scope controls which commands run; full suites now require impact, risk, repository policy, release policy, or an explicit user requirement.
 - Made unit and final-tree verification use the reviewed smallest credible command, and documented `run-quality --command "test=<command>"` as the way to prevent repository-wide test autodetection for bounded changes.
 - Expanded `regression-only` semantics and shipping evidence to cover direct artifact or contract checks when no executable behavior is added.
+- Made package frontmatter validation newline-agnostic so CRLF checkouts pass on Windows while BOM and required-field checks remain fail-closed.
 
 ### Compatibility
 
