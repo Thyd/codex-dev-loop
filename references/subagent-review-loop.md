@@ -105,7 +105,9 @@ Pass only when:
 - Test plan proves acceptance criteria.
 - Risk analysis names material risks.
 - Development plan is split into independently testable units.
-- Every `- TDD: regression-only` waiver is genuinely justified (existing tests cover the change); reject waivers on new behavior.
+- Every `- TDD: regression-only` waiver is genuinely justified (no new
+  executable behavior; existing tests or a direct artifact/contract check
+  cover the change); reject waivers on new behavior.
 - The spec delta matches the goal: ADDED/MODIFIED/REMOVED requirements are complete and testable, and any `No Spec Impact` claim is true.
 - The declared task scale fits the change; flag `small` when the scope or blast radius says otherwise.
 

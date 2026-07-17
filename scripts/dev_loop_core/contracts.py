@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-CORE_VERSION = "0.7.0"
+CORE_VERSION = "0.7.1"
 EVIDENCE_SCHEMA_VERSION = 1
 EVIDENCE_KINDS = frozenset({"loop-state", "tdd", "review"})
 

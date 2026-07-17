@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.7.1 - 2026-07-17
+
+### Added
+
+- Added `references/validation-selection.md` with independent `artifact`, `targeted`, `impacted`, and `full` verification scopes.
+- Added a lightweight asset lane for image, copy, documentation, fixture, and other non-executable changes, recording direct checks with `regression-only` evidence.
+
+### Changed
+
+- Made task scale control workflow weight while validation scope controls which commands run; full suites now require impact, risk, repository policy, release policy, or an explicit user requirement.
+- Made unit and final-tree verification use the reviewed smallest credible command, and documented `run-quality --command "test=<command>"` as the way to prevent repository-wide test autodetection for bounded changes.
+- Expanded `regression-only` semantics and shipping evidence to cover direct artifact or contract checks when no executable behavior is added.
+
+### Compatibility
+
+- CLI paths, command names, phase semantics, evidence schema `1`, and config schema `4` remain unchanged. Existing 0.7.0 evidence remains readable.
+
 ## 0.7.0 - 2026-07-11
 
 ### Added

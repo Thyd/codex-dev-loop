@@ -56,6 +56,14 @@ Use these headings for `.codex/dev-loop/` records.
 ```markdown
 # Test Plan
 
+## Validation Scope
+
+- Level: artifact | targeted | impacted | full
+- Rationale:
+- Acceptance Criteria Mapping:
+- Full-Suite Triggers Present: yes | no
+- Omitted Full-Suite Command And Reason:
+
 ## Unit Tests
 
 ## Integration Tests
@@ -91,7 +99,9 @@ Use these headings for `.codex/dev-loop/` records.
 
 ## development-plan.md
 
-`- TDD:` is `red` (default, failing test required first) or `regression-only` (existing tests cover the change; justify it for plan review).
+`- TDD:` is `red` (default, failing test required first) or `regression-only`
+(no new executable behavior; existing tests or a direct artifact/contract
+check cover the change; justify it for plan review).
 
 ```markdown
 # Development Plan

@@ -5,7 +5,7 @@ description: Run an end-to-end, evidence-gated development loop for standard, mu
 
 # Codex Dev Loop
 
-Current version: 0.7.0
+Current version: 0.7.1
 
 ## Operating Contract
 
@@ -18,6 +18,9 @@ fingerprint, scope, budget, evidence, and transition checks as authoritative.
   `requirements-reviewer` pass before planning.
 - Confirm scale, create every planning artifact, and obtain a current
   `plan-reviewer` pass before coding.
+- Select validation scope separately from task scale. Run the smallest credible
+  checks for the affected surface; use a full suite only when impact, risk,
+  repository policy, or the user requires it.
 - Implement independently testable units test-first. A valid failing red run
   must precede green unless the reviewed plan explicitly allows
   `regression-only`.
@@ -28,8 +31,10 @@ fingerprint, scope, budget, evidence, and transition checks as authoritative.
 
 ## Preflight
 
-1. Read [routing.md](references/routing.md). If the task is bounded and
-   low-risk, route to the matching `dev-*` skill instead of starting this loop.
+1. Read [routing.md](references/routing.md) and
+   [validation-selection.md](references/validation-selection.md). If the task
+   is bounded and low-risk, route to the matching focused skill or lightweight
+   artifact lane instead of starting this loop.
 2. Load `<loop-home>/config/codex-dev-loop.json`; run
    `scripts/configure_dev_loop.py` when first-run preferences are missing.
 3. Run `doctor` before resuming older evidence. If it reports
@@ -59,6 +64,7 @@ Read only the references needed for the active phase:
 | Artifact headings and field schemas | [artifact-templates.md](references/artifact-templates.md) |
 | Reviewer inputs, reports, decisions, remediation | [subagent-review-loop.md](references/subagent-review-loop.md) |
 | Red/green evidence, worktrees, unit implementers | [tdd-parallel-units.md](references/tdd-parallel-units.md) |
+| Adaptive asset, targeted, impacted, or full validation | [validation-selection.md](references/validation-selection.md) |
 | Living spec delta and merge semantics | [spec-baseline.md](references/spec-baseline.md) |
 | Branch, commit, push, and PR rules | [git-pr-flow.md](references/git-pr-flow.md) |
 | Required GitHub Actions checks | [github-actions-cloud.md](references/github-actions-cloud.md) |
@@ -112,7 +118,8 @@ protocol when companion skills are absent.
 Advance only through harness transitions:
 
 1. Intake and clarify; fingerprint and record `requirements-reviewer`.
-2. Confirm scale; create artifacts and record `plan-reviewer`.
+2. Confirm scale and validation scope; create artifacts and record
+   `plan-reviewer`.
 3. Create and record a feature branch.
 4. For each unit, record `run-test --stage red` then current green evidence.
 5. Merge parallel worktrees; record `merge-integrator` when applicable.
@@ -140,7 +147,8 @@ editing ledger JSON by hand.
 - Never call unconfigured hosted scanners, paid services, telemetry, third-party
   AI review SaaS, or non-GitHub APIs without explicit user confirmation.
 - `run-quality --require` may add required gates but cannot replace configured
-  gates. Stop on failure.
+  gates. Use a reviewed `--command "test=<command>"` override when adaptive
+  selection calls for less than the repository-wide suite. Stop on failure.
 - PR/cloud simulation flags are self-test only and require
   `CODEX_DEV_LOOP_TEST_MODE=1`.
 

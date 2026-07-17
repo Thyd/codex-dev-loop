@@ -9,7 +9,7 @@ description: Turn a rough idea or vague request into a concrete, test-mappable s
 
 约定：`<core>` = codex-dev-loop 主 skill 目录下的 `scripts/dev_loop_harness.py`（Codex 默认 `~/.codex/skills/codex-dev-loop/scripts/dev_loop_harness.py`；Claude Code 为 `~/.claude/skills/codex-dev-loop/scripts/dev_loop_harness.py`）。
 
-开始前运行 `python <core> version --require 0.7.0`；版本不足或核心缺失时停止并更新主 skill。
+开始前运行 `python <core> version --require 0.7.1`；版本不足或核心缺失时停止并更新主 skill。
 
 ## 何时用 / 何时不用
 
