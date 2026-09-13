@@ -227,11 +227,11 @@ def make_stdout_encoding_safe() -> None:
 
 def main() -> int:
     args = parse_args()
+    make_stdout_encoding_safe()
     output = Path(args.output).expanduser()
     config = build_config(args, output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    make_stdout_encoding_safe()
     print_summary(config, output)
     return 0
 

@@ -20,6 +20,7 @@
 - Preserve advanced retry limits outside the wizard's suggested choices when updating only the quota preference.
 - Terminate local test process groups/trees on timeout or interruption and retain usable evidence links after archiving.
 - Pin the integration fixture's initial branch to `master`, removing dependence on the host's Git default branch.
+- Apply legacy Windows output-encoding protection before interactive setup prompts, so Chinese questions do not crash when stdout uses a limited encoding.
 
 ### Compatibility
 
