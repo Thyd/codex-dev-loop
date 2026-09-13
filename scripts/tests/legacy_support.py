@@ -320,7 +320,9 @@ def append_dev_002(root: Path) -> None:
 
 
 def init_git_repo(workspace: Path, branch: str = "codex/test") -> None:
-    must(["git", "init"], workspace)
+    # Some scenarios switch back to this protected branch. Do not inherit the
+    # host's init.defaultBranch (which may be main or another user preference).
+    must(["git", "init", "--initial-branch=master"], workspace)
     must(["git", "config", "user.email", "codex@example.invalid"], workspace)
     must(["git", "config", "user.name", "Codex Self Test"], workspace)
     must(["git", "remote", "add", "origin", "https://github.com/example/repo.git"], workspace)

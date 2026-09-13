@@ -9,7 +9,7 @@ description: Turn a set of local changes into a pull request — create a featur
 
 约定：`<core>` = codex-dev-loop 主 skill 目录下的 `scripts/dev_loop_harness.py`。
 
-开始前运行 `python <core> version --require 0.7.1`；版本不足或核心缺失时停止并更新主 skill。
+开始前运行 `python <core> version --require 0.8.0`；版本不足或核心缺失时停止并更新主 skill。
 
 ## 何时用 / 何时不用
 
@@ -36,7 +36,7 @@ python <core> ship-check --label <behavior-1> [--label <behavior-2>]
 4. 提交：规范化 commit message。
 5. push 分支。
 6. 用 `gh` 开 PR，PR 描述包含：改了什么、绿色验证证据路径（`.codex/evidence/tdd/ledger.json`）、（如有）规格 delta 摘要、（如有）`dev-review` 评审结论。
-7. 盯 GitHub Actions 必需检查（`gh pr checks`）；失败或缺失就停下报告。
+7. 盯 GitHub Actions 必需检查（`gh pr checks`）。确认是额度/计费限制时，按已保存的 `ci_quota_policy` 执行[额度不足处理流程](../../references/github-actions-cloud.md#standalone-dev-ship)；其他失败或缺失仍停止报告。
 
 ## 外部服务策略（与主 skill 一致）
 

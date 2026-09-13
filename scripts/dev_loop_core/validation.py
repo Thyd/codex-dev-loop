@@ -282,7 +282,11 @@ def git_commit_is_current(state: dict, root: Path, workspace: Path) -> bool:
 
 def cloud_is_current(state: dict, root: Path, workspace: Path) -> bool:
     record = state.get("github_actions", {})
-    if record.get("status") != "passed":
+    if record.get("status") == "local_fallback_passed":
+        from .ci_quota import local_quota_evidence_is_valid
+        if not local_quota_evidence_is_valid(record, state, root, workspace):
+            return False
+    elif record.get("status") != "passed":
         return False
     return current_record(record, root, workspace, include_workspace=True)
 
@@ -304,7 +308,7 @@ def assert_completion_prereqs(root: Path, state: dict, workspace: Path) -> None:
             raise SystemExit("Cannot complete commit-only mode before recording the current commit.")
         return
     if not cloud_is_current(state, root, workspace):
-        raise SystemExit("Cannot complete before GitHub Actions cloud checks pass.")
+        raise SystemExit("Cannot complete before GitHub Actions checks or configured local quota replacement checks pass.")
 
 
 def assert_phase_prereqs(root: Path, state: dict, target: str, workspace: Path) -> None:
@@ -360,7 +364,7 @@ def assert_phase_prereqs(root: Path, state: dict, target: str, workspace: Path) 
             raise SystemExit("Recorded PR is stale for the current plan or workspace.")
     if target == "complete":
         if not cloud_is_current(state, root, workspace):
-            raise SystemExit("Cannot complete before GitHub Actions cloud checks pass.")
+            raise SystemExit("Cannot complete before GitHub Actions checks or configured local quota replacement checks pass.")
 
 
 def assert_transition(root: Path, state: dict, target: str, workspace: Path) -> None:
@@ -657,7 +661,14 @@ def run_gh_json(workspace: Path, gh: str, args: list[str]) -> object:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
-    if result.returncode != 0:
+    # gh pr checks returns 1 for failed checks and 8 for pending checks while
+    # still emitting usable JSON. Authentication/API errors remain errors.
+    allowed_codes = {0, 1, 8} if args[:2] == ["pr", "checks"] and "--json" in args else {0}
+    if (args[:2] == ["pr", "checks"] and "--required" in args and "--json" in args
+            and result.returncode == 1 and not result.stdout.strip()
+            and re.fullmatch(r"no required checks reported on the '.+' branch", result.stderr.strip())):
+        return []
+    if result.returncode not in allowed_codes:
         message = result.stderr.strip() or result.stdout.strip() or f"{gh} {' '.join(args)} failed"
         raise SystemExit(message)
     try:

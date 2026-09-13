@@ -5,7 +5,7 @@ description: Run an end-to-end autonomous development loop on Claude Code from a
 
 # Codex Dev Loop — Claude Code Adapter
 
-Current version: 0.7.1
+Current version: 0.8.0
 
 This adapter runs the same harness-enforced loop as the root [SKILL.md](../../SKILL.md), mapped to Claude Code. The state machine, gates, fingerprints, artifacts, and stop conditions are identical; only the agent-specific mechanics differ. Read the root SKILL.md sections for anything not restated here — this file only overrides what is Claude-specific. Before resuming 0.5.x evidence, run `doctor`; preview and run `migrate-evidence` when required.
 
@@ -50,6 +50,10 @@ During the `intake` phase, ask the user clarification questions directly in chat
 
 ## Quality Gate Notes
 
+- The first-run wizard also saves `ci_quota_policy`: local replacement checks
+  by the current agent, or waiting for payment before resuming GitHub CI. Use
+  the same [quota procedure](../../references/github-actions-cloud.md#quota-policy)
+  and persisted choice as Codex; never label a local replacement as cloud success.
 - The bundled fallback autodetects `npm/pnpm/yarn` scripts, `pytest`, `go`, `cargo`, and `semgrep` on PATH; anything else needs a `--command "gate=<cmd>"` override.
 - Follow [validation-selection.md](../../references/validation-selection.md).
   For `artifact`, `targeted`, or `impacted`, pass the reviewed
