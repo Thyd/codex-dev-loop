@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.8.0 - 2026-09-13
+
+### Added
+
+- Added a fifth first-run preference for GitHub Actions quota exhaustion: `local_fallback` lets the current agent execute equivalent local checks and continue; `wait_for_payment` retains progress until payment restores quota and the original CI plan can resume.
+- Added `record-cloud --status quota-exhausted`, `--local-check CHECK=COMMAND`, and per-command timeouts. Quota handling verifies live GitHub check-run annotations against the current PR commit before applying the saved policy.
+- Added separate local replacement evidence with command logs, exit codes, timestamps, commit and workspace fingerprints, evidence hashes, and archive-safe paths. A local pass remains distinct from a cloud CI pass.
+
+### Changed
+
+- Setup now preserves existing answers, advanced settings, and extension fields; upgrades ask only for missing preferences. `--ci-quota-policy` updates one preference and `--reconfigure` asks all questions again.
+- Normal cloud recording and payment recovery now verify the live PR commit and repository-required checks, so unrelated commits or incomplete required checks cannot pass recovery.
+- Updated the main skill, standalone shipping workflow, Claude Code adapter, and Chinese/English documentation to reuse the saved quota policy without repeated approval requests.
+
+### Fixed
+
+- Handle GitHub CLI's empty required-check result and both check detail URL formats without treating them as quota evidence failures.
+- Preserve advanced retry limits outside the wizard's suggested choices when updating only the quota preference.
+- Terminate local test process groups/trees on timeout or interruption and retain usable evidence links after archiving.
+- Pin the integration fixture's initial branch to `master`, removing dependence on the host's Git default branch.
+- Apply legacy Windows output-encoding protection before interactive setup prompts, so Chinese questions do not crash when stdout uses a limited encoding.
+
+### Compatibility
+
+- Config schema advances from `4` to `5`; older configs remain readable and safely wait for payment until a quota preference is chosen. Existing active states missing the field adopt it from saved configuration when recording cloud evidence.
+- Evidence schema remains `1`. Existing CLI commands and automation scopes remain supported. Local fallback applies only to verified quota/billing failures, never code failures, missing credentials, or unavailable checks, and does not bypass branch protection.
+
 ## 0.7.1 - 2026-07-17
 
 ### Added

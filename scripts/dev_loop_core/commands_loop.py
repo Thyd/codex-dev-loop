@@ -784,12 +784,21 @@ def cmd_record_cloud(args: argparse.Namespace) -> int:
     root = Path(args.root)
     workspace = Path(args.workspace).resolve()
     state = read_state(root)
+    if "ci_quota_policy" not in state.get("config", {}):
+        saved_config = load_loop_config(args.config or state.get("config", {}).get("path", ""))
+        state.setdefault("config", {})["ci_quota_policy"] = saved_config["ci_quota_policy"]
     assert_phase(state, {"cloud_checks"})
     assert_phase_prereqs(root, state, "cloud_checks", workspace)
+    # A new observation invalidates any previous pass, including when fetching
+    # or validating the new observation fails.
+    state["github_actions"] = {}
+    write_state(root, state)
     profile = quality_profile(state)
     required_checks = [*profile["cloud_checks"], *args.extra_required_check]
     if args.allow_local_simulation:
         assert_test_mode("GitHub Actions local simulation")
+        if args.status == "quota-exhausted":
+            raise SystemExit("Quota fallback requires live GitHub evidence; local simulation is not supported.")
         if not args.evidence:
             raise SystemExit("--evidence is required with --allow-local-simulation.")
         cloud_data = load_json_file(Path(args.evidence))
@@ -797,7 +806,21 @@ def cmd_record_cloud(args: argparse.Namespace) -> int:
         pr_url = state.get("git", {}).get("pr_url")
         if not pr_url:
             raise SystemExit("Missing recorded PR URL for GitHub Actions checks.")
+        if args.status != "quota-exhausted":
+            from .ci_quota import verify_current_pr
+            verify_current_pr(state, workspace, lambda arguments: run_gh_json(workspace, args.gh, arguments))
         cloud_data = run_gh_json(workspace, args.gh, ["pr", "checks", pr_url, "--json", "name,state,link"])
+        required_data = run_gh_json(workspace, args.gh, ["pr", "checks", pr_url, "--required", "--json", "name,state,link"])
+        if not isinstance(required_data, list) or any(not isinstance(item, dict) or not item.get("name") for item in required_data):
+            raise SystemExit("Could not read repository-required checks.")
+        required_checks = list(dict.fromkeys([*required_checks, *(item["name"] for item in required_data)]))
+        if args.status == "quota-exhausted":
+            from .ci_quota import record_quota_result
+            return record_quota_result(args, root, workspace, state, cloud_data, required_checks,
+                                       bool(profile["require_ai_review"]),
+                                       lambda arguments: run_gh_json(workspace, args.gh, arguments))
+    if args.local_check:
+        raise SystemExit("--local-check is only valid with --status quota-exhausted.")
     checks = validate_cloud_evidence(cloud_data, required_checks, require_ai_review=bool(profile["require_ai_review"])) if args.status == "passed" else []
     evidence_dest = root / "github-actions-evidence.json"
     evidence_dest.write_text(json.dumps(cloud_data, indent=2), encoding="utf-8")
@@ -1001,7 +1024,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
         if automation_level == "pr_without_merge" and not git_pr_is_current(state, root, workspace):
             findings.append("PR record is not current")
         if automation_level == "pr_without_merge" and not cloud_is_current(state, root, workspace):
-            findings.append("GitHub Actions cloud checks are not recorded as current and passed")
+            findings.append("GitHub Actions checks or configured local quota replacement checks are not current and passed")
     if state.get("blockers"):
         findings.extend(f"Blocker: {item}" for item in state["blockers"])
     if findings:

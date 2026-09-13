@@ -127,13 +127,14 @@ TEST_MODE_ENV = "CODEX_DEV_LOOP_TEST_MODE"
 # single-source-of-truth guard watches for an in-flight loop.
 DEFAULT_EVIDENCE_DIRNAME = ".codex/evidence"
 CANONICAL_LOOP_DIR = ".codex/dev-loop"
-CONFIG_SCHEMA_VERSION = 4
+CONFIG_SCHEMA_VERSION = 5
 DEFAULT_CONFIG = {
     "schema_version": CONFIG_SCHEMA_VERSION,
     "automation_level": "pr_without_merge",
     "source_types": ["markdown", "notion"],
     "quality_profile": "standard",
     "test_failure_limit": 3,
+    "ci_quota_policy": "wait_for_payment",
     "max_units": 8,
     "max_files_changed": 20,
     "max_test_retries_per_unit": 3,
@@ -289,6 +290,8 @@ def normalize_config(raw: object) -> dict:
         raise SystemExit(f"Invalid automation_level in codex-dev-loop config: {config.get('automation_level')!r}")
     if config.get("quality_profile") not in QUALITY_PROFILE_NAMES:
         raise SystemExit(f"Invalid quality_profile in codex-dev-loop config: {config.get('quality_profile')!r}")
+    if config.get("ci_quota_policy") not in {"local_fallback", "wait_for_payment"}:
+        raise SystemExit(f"Invalid ci_quota_policy in codex-dev-loop config: {config.get('ci_quota_policy')!r}")
     # schema <= 3 exposed risk_mode choices that never changed harness
     # behavior. Drop the legacy key instead of preserving a false promise;
     # architecture/security/data/credential/quality blockers remain hard stops.

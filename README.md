@@ -1,7 +1,7 @@
 # Codex Dev Loop · 从需求到 PR 的自动开发 loop
 
 ![Skill](https://img.shields.io/badge/Skill-Codex%20%7C%20Claude%20Code-111111?style=flat-square)
-![Version](https://img.shields.io/badge/Version-v0.7.1-blue?style=flat-square)
+![Version](https://img.shields.io/badge/Version-v0.8.0-blue?style=flat-square)
 ![Quality Gate](https://img.shields.io/badge/Quality%20Gate-required-0A7CFF?style=flat-square)
 ![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-supported-2088FF?style=flat-square)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
@@ -52,7 +52,7 @@ python ~/.codex/skills/codex-dev-loop/scripts/dev_loop_harness.py --root .codex/
 python ~/.codex/skills/codex-dev-loop/scripts/dev_loop_harness.py --root .codex/dev-loop --workspace . migrate-evidence
 ```
 
-0.7.1 新增独立于任务规模的自适应验证范围：静态资产、定向、受影响面和全量四档；轻量图片/文案替换默认运行直接资产校验，而不是代码全量测试。0.7.0 的 CLI 路径、子命令、阶段语义和证据 schema 保持兼容。
+0.8.0 新增 GitHub CI 额度不足处理策略：首次配置可选择由当前 agent 在本地补测后继续，或保留进度、待用户付费恢复额度后继续原 CI 流程。选择会持久保存；旧配置升级只补问缺失项。配置 schema 升级为 5，证据 schema 仍为 1；保留 0.7.1 的自适应验证范围。
 
 初次使用前，运行 4 问配置：
 
@@ -251,7 +251,7 @@ python ~/.codex/skills/codex-dev-loop/scripts/configure_dev_loop.py
 python "$env:USERPROFILE\.codex\skills\codex-dev-loop\scripts\configure_dev_loop.py"
 ```
 
-它只问 4 个问题：
+它询问 5 个核心问题；重新运行时保留已有答案，只补问缺失项：
 
 | 问题 | 默认值 | 影响 |
 |---|---|---|
@@ -259,6 +259,7 @@ python "$env:USERPROFILE\.codex\skills\codex-dev-loop\scripts\configure_dev_loop
 | 需求来源主要是什么？ | Markdown + Notion | 决定允许从哪些来源读取需求 |
 | 质量门严格度选哪种？ | 标准 | 决定强制哪些本地质量门和云端检查 |
 | 测试失败允许自动修复几次？ | 3 次 | 同一测试门连续失败超过重试次数后停止；通过一次即重置计数 |
+| GitHub CI 额度不足时怎么办？ | 等待付费恢复 | ① 降级为本地由当前 agent 补做测试；② 待用户付费后按原计划继续 |
 
 配置会写入：
 
@@ -268,12 +269,21 @@ python "$env:USERPROFILE\.codex\skills\codex-dev-loop\scripts\configure_dev_loop
 
 harness 会执行这些配置：不允许的来源类型会在 `init --source-type ...` 阶段被拒绝；`planning_only` 和 `commit_only` 会在各自完成点停止。
 
-架构、安全、数据、凭证、外部服务和必需质量门风险始终停止并询问，不提供可绕过硬闸门的风险模式。
+`ci_quota_policy` 持久保存为 `local_fallback` 或 `wait_for_payment`，后续开发复用。只有经 GitHub 证据确认的额度/计费失败才适用：选择本地时，当前 agent 补做对应检查并记录日志；选择等待时，保留进度，额度恢复后重跑 CI。旧配置未选择时保持等待，并在配置向导补问。普通代码、凭证或服务配置错误仍停止。详见[额度处理与恢复命令](references/github-actions-cloud.md#quota-policy)。
+
+只修改此选项（不重置其他设置）：
+
+```bash
+python <skill-dir>/scripts/configure_dev_loop.py --non-interactive --ci-quota-policy local_fallback
+# 或：--ci-quota-policy wait_for_payment
+```
+
+`--reconfigure` 可重新询问所有偏好。本地补测通过会明确标记为本地结果；不会把 GitHub 状态写成通过，也不会绕过分支保护。
 
 配置完成后会输出类似说明：
 
 ```text
-自动化范围当前的设置是“创建 PR 后停止”；如后续需要调整自动化范围、需求来源、质量门严格度或测试重试次数，也请随时告知我。
+自动化范围当前的设置是“创建 PR 后停止”；如后续需要调整自动化范围、需求来源、质量门严格度、测试重试次数或 CI 额度不足处理方式，也请随时告知我。
 ```
 
 ### 依赖环境
@@ -519,9 +529,9 @@ python ~/.codex/skills/codex-dev-loop/scripts/dev_loop_harness.py --root .codex/
 python ~/.codex/skills/codex-dev-loop/scripts/dev_loop_harness.py --root .codex/dev-loop --workspace . migrate-evidence
 ```
 
-Version 0.7.1 adds validation scope independently of task scale: artifact, targeted, impacted, and full. Lightweight image or copy replacements now default to direct artifact checks instead of the full code suite, while preserving the 0.7.0 CLI paths, command names, phase semantics, and evidence schema.
+Version 0.8.0 adds a persisted GitHub CI quota policy: the current agent can run equivalent checks locally, or retain progress until payment restores quota and resume the original CI plan. Setup upgrades ask only for missing preferences. Config schema advances to 5, evidence schema stays at 1, and the adaptive validation scopes from 0.7.1 remain available.
 
-Before the first run, configure the four core preferences:
+Before the first run, configure the five core preferences:
 
 ```bash
 python ~/.codex/skills/codex-dev-loop/scripts/configure_dev_loop.py
@@ -695,7 +705,7 @@ python ~/.codex/skills/codex-dev-loop/scripts/configure_dev_loop.py
 python "$env:USERPROFILE\.codex\skills\codex-dev-loop\scripts\configure_dev_loop.py"
 ```
 
-It asks four questions:
+It asks five core questions; reruns preserve existing answers and ask only for missing preferences:
 
 | Question | Default | Impact |
 |---|---|---|
@@ -703,6 +713,7 @@ It asks four questions:
 | What source types do you use? | Markdown + Notion | Controls allowed requirement sources |
 | How strict should quality gates be? | Standard | Controls required local and cloud gates |
 | How many failed test attempts are allowed? | 3 | Controls when the loop stops on repeated test failures |
+| What if GitHub CI quota is exhausted? | Wait for payment | 1. Current agent runs equivalent tests locally; 2. Resume original CI after payment restores quota |
 
 The config is written to:
 
@@ -712,7 +723,9 @@ The config is written to:
 
 The harness enforces these preferences: disabled source types are rejected during `init --source-type ...`, and `planning_only` / `commit_only` stop at their configured completion points. Advanced JSON keys also set budget/time-box limits: `max_units` (8), `max_files_changed` (20), `max_test_retries_per_unit` (3), `max_review_iterations` (3), `max_quality_fix_rounds` (2), and `max_diff_lines` (1200).
 
-Architecture, security, data, credential, external-service, and required quality-gate risks are always hard stops; there is no preference that weakens these gates.
+`ci_quota_policy` persists as `local_fallback` or `wait_for_payment`. Verified GitHub quota/billing failures either run equivalent local checks through the current agent or retain progress until quota is restored. Legacy configs without a choice wait safely and are prompted during setup. Code, credential, and service-configuration failures remain blockers. See [quota handling and recovery](references/github-actions-cloud.md#quota-policy).
+
+Change just this preference with `configure_dev_loop.py --non-interactive --ci-quota-policy local_fallback` (or `wait_for_payment`); other settings stay intact. Use `--reconfigure` to ask all questions again. Local replacement success is recorded separately from GitHub CI and does not bypass branch protection.
 
 The wizard ends with a note like:
 

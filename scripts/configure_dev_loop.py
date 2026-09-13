@@ -20,9 +20,9 @@ def default_output() -> Path:
 
 
 DEFAULT_OUTPUT = default_output()
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
-# Advanced keys kept out of the four-question wizard on purpose; they get
+# Advanced keys kept out of the five-question wizard on purpose; they get
 # safe defaults here and can be edited in the JSON directly.
 ADVANCED_DEFAULTS = {
     "default_scale": "standard",
@@ -76,6 +76,14 @@ QUESTIONS = {
             ("0", "失败就停止", "第一次失败就停下询问。"),
         ],
     },
+    "ci_quota_policy": {
+        "prompt": "5. GitHub Actions CI 额度不足时怎么办？",
+        "default": "wait_for_payment",
+        "options": [
+            ("local_fallback", "降级为本地由当前 agent 补做测试", "确认是额度或计费限制后，执行对应本地检查并记录结果，按原自动化范围继续。"),
+            ("wait_for_payment", "待用户付费后再按原计划继续", "保留进度，等待用户付费、恢复额度后重跑 GitHub CI。"),
+        ],
+    },
 }
 
 LABELS = {key: {value: label for value, label, _ in spec["options"]} for key, spec in QUESTIONS.items()}
@@ -94,6 +102,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-types", choices=[value for value, _, _ in QUESTIONS["source_types"]["options"]])
     parser.add_argument("--quality-profile", choices=[value for value, _, _ in QUESTIONS["quality_profile"]["options"]])
     parser.add_argument("--test-failure-limit", choices=[value for value, _, _ in QUESTIONS["test_failure_limit"]["options"]])
+    parser.add_argument("--ci-quota-policy", choices=[value for value, _, _ in QUESTIONS["ci_quota_policy"]["options"]])
+    parser.add_argument("--reconfigure", action="store_true", help="Ask all questions again; otherwise preserve existing answers and ask only missing ones.")
     return parser.parse_args()
 
 
@@ -121,37 +131,53 @@ def choose(key: str, supplied: str | None, non_interactive: bool) -> str:
         print("输入无效，请重新选择。")
 
 
-def load_existing_advanced(output: Path) -> dict:
-    """Preserve previously configured advanced keys when re-running the wizard."""
-    advanced = dict(ADVANCED_DEFAULTS)
+def load_existing(output: Path) -> dict:
+    """Preserve answers and extension settings when upgrading configuration."""
     if output.exists():
         try:
             existing = json.loads(output.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            return advanced
+        except json.JSONDecodeError as exc:
+            raise SystemExit(f"Invalid config JSON: {output}: {exc}") from exc
         if isinstance(existing, dict):
-            for key in ADVANCED_DEFAULTS:
-                if key in existing:
-                    advanced[key] = existing[key]
-    return advanced
+            return existing
+        raise SystemExit(f"Config must be a JSON object: {output}")
+    return {}
 
 
 def build_config(args: argparse.Namespace, output: Path) -> dict:
-    automation_level = choose("automation_level", args.automation_level, args.non_interactive)
-    source_choice = choose("source_types", args.source_types, args.non_interactive)
-    quality_profile = choose("quality_profile", args.quality_profile, args.non_interactive)
-    test_failure_limit = choose("test_failure_limit", args.test_failure_limit, args.non_interactive)
-    advanced = load_existing_advanced(output)
-    advanced["max_test_retries_per_unit"] = int(test_failure_limit)
-    return {
+    existing = load_existing(output)
+    choices = {}
+    for key in QUESTIONS:
+        supplied = getattr(args, key)
+        if supplied is None and not args.reconfigure:
+            saved = existing.get(key)
+            if key == "source_types":
+                saved = next((name for name, sources in SOURCE_MAP.items() if sources == saved), None)
+            if key == "test_failure_limit":
+                saved = existing.get("max_test_retries_per_unit", saved)
+                if saved is not None and str(saved).isdigit():
+                    # Advanced JSON may use a valid limit beyond the wizard's
+                    # suggested 0..3 values. A policy-only update must retain it.
+                    choices[key] = str(saved)
+                    continue
+            if saved is not None and str(saved) in LABELS[key]:
+                supplied = str(saved)
+        choices[key] = choose(key, supplied, args.non_interactive)
+    config = {
+        **ADVANCED_DEFAULTS,
+        **existing,
         "schema_version": SCHEMA_VERSION,
-        "configured_at": dt.datetime.now(dt.timezone.utc).isoformat(),
-        "automation_level": automation_level,
-        "source_types": SOURCE_MAP[source_choice],
-        "quality_profile": quality_profile,
-        "test_failure_limit": int(test_failure_limit),
-        **advanced,
+        "automation_level": choices["automation_level"],
+        "source_types": SOURCE_MAP[choices["source_types"]],
+        "quality_profile": choices["quality_profile"],
+        "test_failure_limit": int(choices["test_failure_limit"]),
+        "max_test_retries_per_unit": int(choices["test_failure_limit"]),
+        "ci_quota_policy": choices["ci_quota_policy"],
     }
+    config.pop("risk_mode", None)
+    if config != existing:
+        config["configured_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
+    return config
 
 
 def source_label(config: dict) -> str:
@@ -176,12 +202,13 @@ def print_summary(config: dict, output: Path) -> None:
     limit = config["test_failure_limit"]
     limit_label = "失败就停止" if limit == 0 else f"{limit} 次"
     print(f"- 测试失败自动修复次数：{limit_label}")
+    print(f"- CI 额度不足时：{LABELS['ci_quota_policy'][config['ci_quota_policy']]}")
     print("- 高风险处理方式：架构、安全、数据、凭证与质量门风险始终停止并询问")
     print()
     print(f"配置文件：{output}")
     print(
         f"自动化范围当前的设置是“{LABELS['automation_level'][config['automation_level']]}”；"
-        "如后续需要调整自动化范围、需求来源、质量门严格度或测试重试次数，也请随时告知我。"
+        "如后续需要调整自动化范围、需求来源、质量门严格度、测试重试次数或 CI 额度不足处理方式，也请随时告知我。"
     )
     print(
         f"高级选项（默认任务规模 default_scale={config['default_scale']}、规格基线目录 spec_dir={config['spec_dir']}、"
@@ -200,11 +227,11 @@ def make_stdout_encoding_safe() -> None:
 
 def main() -> int:
     args = parse_args()
+    make_stdout_encoding_safe()
     output = Path(args.output).expanduser()
     config = build_config(args, output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    make_stdout_encoding_safe()
     print_summary(config, output)
     return 0
 

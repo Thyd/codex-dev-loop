@@ -16,9 +16,25 @@
 
 Use `<loop-home>/config/codex-dev-loop.json` when present. `<loop-home>` is
 `~/.codex` unless `CODEX_DEV_LOOP_HOME` relocates it. If configuration is
-missing, run `scripts/configure_dev_loop.py`; it asks only for automation
-level, source types, quality profile, and test retry limit. Advanced budget,
+missing or lacks `ci_quota_policy`, run `scripts/configure_dev_loop.py`; it asks
+for automation level, source types, quality profile, test retry limit, and what
+to do when GitHub CI quota is exhausted. Present these choices in order:
+
+1. `local_fallback`: current agent runs equivalent tests locally and continues;
+2. `wait_for_payment`: retain progress until payment/quota restoration, then
+   continue the original GitHub CI plan.
+
+In chat, collect the answer before using `--non-interactive --ci-quota-policy
+<choice>` to save it. Do not silently choose on the user's behalf. Existing
+answers and advanced settings are preserved; only missing questions are asked.
+Use `--reconfigure` to ask all questions again, or a specific flag to change one.
+Non-interactive callers that omit the policy and legacy configs default to
+`wait_for_payment`; they never gain implicit fallback permission. Advanced budget,
 scale, spec-dir, and gate-script settings retain safe defaults.
+
+`init` snapshots configuration into the loop state; resumed runs reuse that
+choice. Older active states without this field adopt it from their saved config
+when recording cloud evidence. New runs read the saved preferences again.
 
 Before resuming evidence created by an older core, inspect it:
 
@@ -169,6 +185,12 @@ python <skill-dir>/scripts/dev_loop_harness.py --root .codex/dev-loop record-clo
 
 Local PR/cloud simulation flags are self-test only and require
 `CODEX_DEV_LOOP_TEST_MODE=1`.
+
+On a verified quota/billing failure, follow
+[the quota policy procedure](github-actions-cloud.md#quota-policy). The harness
+reads the saved choice, either executes the current agent's equivalent commands
+with `record-cloud --status quota-exhausted --local-check "<check>=<command>"`,
+or records a resumable wait for payment. Do not re-ask a choice already saved.
 
 ## Backtracking And Archive
 

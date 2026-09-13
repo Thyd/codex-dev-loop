@@ -152,11 +152,13 @@ def build_parser() -> argparse.ArgumentParser:
     pr.set_defaults(func=cmd_record_pr)
 
     cloud = sub.add_parser("record-cloud")
-    cloud.add_argument("--status", required=True, choices=["passed", "failed", "blocked"])
+    cloud.add_argument("--status", required=True, choices=["passed", "failed", "blocked", "quota-exhausted"])
     cloud.add_argument("--gh", default="gh")
     cloud.add_argument("--evidence", default="")
     cloud.add_argument("--extra-required-check", action="append", default=[])
     cloud.add_argument("--allow-local-simulation", action="store_true")
+    cloud.add_argument("--local-check", action="append", default=[], metavar="CHECK=COMMAND", help="Current agent's equivalent local check for a verified quota-blocked GitHub check.")
+    cloud.add_argument("--timeout", type=int, default=900, help="Timeout in seconds per local replacement check.")
     cloud.set_defaults(func=cmd_record_cloud)
 
     resolve = sub.add_parser("resolve-blocker")

@@ -5,7 +5,7 @@ description: Run an end-to-end, evidence-gated development loop for standard, mu
 
 # Codex Dev Loop
 
-Current version: 0.7.1
+Current version: 0.8.0
 
 ## Operating Contract
 
@@ -27,7 +27,8 @@ fingerprint, scope, budget, evidence, and transition checks as authoritative.
 - Keep tests, spec merge, reviews, quality, commit, PR, and cloud evidence bound
   to current plan/workspace fingerprints; changed inputs invalidate old passes.
 - Stop at ambiguity, hard risk, exhausted budgets, missing credentials, or a
-  failed required gate. Never weaken gates to make the loop finish.
+  failed required gate. For verified GitHub quota failures, follow the saved
+  `ci_quota_policy` and require recorded local replacements or wait for payment.
 
 ## Preflight
 
@@ -36,7 +37,9 @@ fingerprint, scope, budget, evidence, and transition checks as authoritative.
    is bounded and low-risk, route to the matching focused skill or lightweight
    artifact lane instead of starting this loop.
 2. Load `<loop-home>/config/codex-dev-loop.json`; run
-   `scripts/configure_dev_loop.py` when first-run preferences are missing.
+   `scripts/configure_dev_loop.py` when first-run preferences, including
+   `ci_quota_policy`, are missing. Ask the user to choose local tests by the
+   current agent or waiting for payment; persist the answer and reuse it.
 3. Run `doctor` before resuming older evidence. If it reports
    `needs-migration`, read [evidence-contracts.md](references/evidence-contracts.md),
    preview `migrate-evidence --dry-run`, then migrate.
@@ -127,8 +130,8 @@ Advance only through harness transitions:
 7. Record implementation, docs-impact, and required risk reviews.
 8. Run and record `run-quality`.
 9. Commit; for full automation push, open, verify, and `record-pr`.
-10. Verify and record required cloud checks, complete, write final records, and
-    `archive`.
+10. Verify and record required cloud checks (or the saved quota policy's local
+    replacement evidence), complete, write final records, and `archive`.
 
 Changing reviewed plans, source, code, specs, reports, or git state may
 invalidate downstream evidence. Re-run the affected gate rather than copying or
@@ -158,6 +161,8 @@ Respect `planning_only`, `commit_only`, and `pr_without_merge`. Completion must
 match the configured automation level and retain current local evidence,
 including source/clarification, plans, reviews, tests, spec merge, quality,
 commit, and—when applicable—PR/cloud records.
+Local quota replacement passes must be disclosed as such; they do not make
+GitHub checks green or authorize merging past branch protection.
 
 A run is not complete until `archive` succeeds and `.codex/dev-loop/` no longer exists.
 Verify the archive path before the final response; `phase: complete` alone is

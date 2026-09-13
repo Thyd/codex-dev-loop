@@ -78,9 +78,9 @@ def _run_loop_integration_suite() -> int:
             "max_quality_fix_rounds": 2,
             "max_diff_lines": 1200,
         }
-        if data.get("schema_version") != 4 or data.get("default_scale") != "standard" or data.get("spec_dir") != "specs":
+        if data.get("schema_version") != 5 or data.get("default_scale") != "standard" or data.get("spec_dir") != "specs":
             print(json.dumps(data, indent=2, ensure_ascii=False))
-            print("Expected schema v4 defaults from the configuration wizard.")
+            print("Expected schema v5 defaults from the configuration wizard.")
             return 1
         for key, value in expected_budget.items():
             if data.get(key) != value:
@@ -679,9 +679,9 @@ def _run_loop_integration_suite() -> int:
         workspace, root = init_loop(harness, tmp, config_path=v1_config)
         state_data = json.loads((root / "loop-state.json").read_text(encoding="utf-8"))
         migrated = state_data.get("config", {})
-        if migrated.get("schema_version") != 4 or migrated.get("default_scale") != "standard" or migrated.get("spec_dir") != "specs":
+        if migrated.get("schema_version") != 5 or migrated.get("default_scale") != "standard" or migrated.get("spec_dir") != "specs":
             print(json.dumps(migrated, indent=2))
-            print("Expected schema v1 config to migrate to v4 defaults at init.")
+            print("Expected schema v1 config to migrate to v5 defaults at init.")
             return 1
         if migrated.get("max_test_retries_per_unit") != 3 or migrated.get("max_units") != 8 or migrated.get("max_diff_lines") != 1200:
             print(json.dumps(migrated, indent=2))
