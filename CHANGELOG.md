@@ -12,6 +12,10 @@
 - `resolve-blocker` resets exhausted test counters only, preserving pending counts for other issues. `verify-units` retains the selected issue ID during final-tree re-verification.
 - Updated setup wording, main and focused skills, Claude Code adapter, and bilingual guidance to use stable issue IDs without rotating IDs to bypass a retry budget.
 
+### Fixed
+
+- Made the process-cleanup regression test release its child only after cleanup returns, so Windows cleanup latency is not mistaken for an orphan process.
+
 ### Compatibility
 
 - Omitting `--issue` preserves per-unit counters. Existing evidence and reset markers remain readable. Config keys `max_test_retries_per_unit` and `test_failure_limit` retain their names; config schema stays at 5 and evidence schema stays at 1.

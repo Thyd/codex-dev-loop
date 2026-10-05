@@ -199,12 +199,27 @@ def test_legacy_active_loop_adopts_saved_choice(cloud_case) -> None:
 
 
 def test_timeout_stops_child_processes_before_returning(cloud_case) -> None:
-    source = "import time; from pathlib import Path; time.sleep(2); Path('late-write.txt').write_text('orphan')"
+    source = (
+        "import time\n"
+        "from pathlib import Path\n"
+        "Path('child-ready.txt').write_text('ready')\n"
+        "release = Path('cleanup-returned.txt')\n"
+        "deadline = time.monotonic() + 30\n"
+        "while not release.exists() and time.monotonic() < deadline:\n"
+        "    time.sleep(0.05)\n"
+        "if release.exists():\n"
+        "    Path('late-write.txt').write_text('orphan')\n"
+    )
     separator = " & " if sys.platform == "win32" else "; "
-    command = python_command(source) + separator + "echo child finished"
-    assert record(cloud_case, "ai-quality-gate=" + command, timeout=1) == 1
+    command = python_command(f"exec({source!r})") + separator + "echo child finished"
+    assert record(cloud_case, "ai-quality-gate=" + command, timeout=2) == 1
     state = read_state(cloud_case["root"])
     assert state["github_actions"]["status"] == "local_fallback_failed"
+    assert (cloud_case["workspace"] / "child-ready.txt").exists(), "Child did not start before cleanup."
+    # Windows tree cleanup can take longer than the command timeout. Release
+    # the child only after cleanup returns, so pre-return work cannot falsely
+    # imply an orphan survived the function's promised cleanup boundary.
+    (cloud_case["workspace"] / "cleanup-returned.txt").write_text("returned")
     time.sleep(2)
     assert not (cloud_case["workspace"] / "late-write.txt").exists()
 
