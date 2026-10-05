@@ -210,8 +210,13 @@ def test_timeout_stops_child_processes_before_returning(cloud_case) -> None:
         "if release.exists():\n"
         "    Path('late-write.txt').write_text('orphan')\n"
     )
+    child_script = cloud_case["workspace"] / "timeout-child.py"
+    child_script.write_text(source, encoding="utf-8")
+    arguments = [sys.executable, str(child_script)]
+    # Launch a script file so cmd.exe never interprets Python quotes or '<'.
+    child_command = subprocess.list2cmdline(arguments) if sys.platform == "win32" else shlex.join(arguments)
     separator = " & " if sys.platform == "win32" else "; "
-    command = python_command(f"exec({source!r})") + separator + "echo child finished"
+    command = child_command + separator + "echo child finished"
     assert record(cloud_case, "ai-quality-gate=" + command, timeout=2) == 1
     state = read_state(cloud_case["root"])
     assert state["github_actions"]["status"] == "local_fallback_failed"
