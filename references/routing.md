@@ -62,7 +62,7 @@
 |---|---|
 | 变更触及敏感路径 | `python <core> guard-check`（每次提交证据前顺带跑） |
 | 实际单元数超预估 ×2 或 > 5 | 对照规划 |
-| 测试连续失败达配置上限 | 失败计数器 |
+| 同一 issue 的测试失败耗尽重试次数 | 按稳定 issue ID 分别计数；完整 loop 用 `--issue`，未指定时沿用单元计数；独立模式由 agent 跟踪 |
 | 任一 reviewer 给出 `block` | `dev-review` / loop 评审 |
 | diff 超出声明的文件 scope | 实现评审 |
 

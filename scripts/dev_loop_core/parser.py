@@ -108,6 +108,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     test = sub.add_parser("run-test")
     test.add_argument("--unit", required=True)
+    test.add_argument("--issue", default=None, help="Stable issue ID for an independent retry budget across units; omitted uses the unit's legacy budget.")
     test.add_argument("--command", required=True)
     test.add_argument("--stage", choices=sorted(TEST_STAGES), default="green", help="red records failing TDD evidence; green is the pass gate.")
     test.add_argument("--timeout", type=int, default=600)
@@ -117,6 +118,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     record_test = sub.add_parser("record-test")
     record_test.add_argument("--unit", required=True)
+    record_test.add_argument("--issue", default=None, help="Stable issue ID matching the problem under repair; omitted uses the unit's legacy budget.")
     record_test.add_argument("--meta", required=True, help="AUTODEV_TEST_META JSON produced by the test gate inside the worktree.")
     record_test.add_argument("--worktree", required=True, help="Linked git worktree where the unit-implementer ran the gate.")
     record_test.add_argument("--stage", choices=sorted(TEST_STAGES), default="green")

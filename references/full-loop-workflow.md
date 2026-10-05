@@ -7,6 +7,7 @@
 - [Scale and planning](#scale-and-planning)
 - [Adaptive validation scope](#adaptive-validation-scope)
 - [Implementation and TDD](#implementation-and-tdd)
+- [Issue retry budgets](#issue-retry-budgets)
 - [Spec, review, and quality](#spec-review-and-quality)
 - [Git, PR, and cloud checks](#git-pr-and-cloud-checks)
 - [Backtracking and archive](#backtracking-and-archive)
@@ -17,7 +18,7 @@
 Use `<loop-home>/config/codex-dev-loop.json` when present. `<loop-home>` is
 `~/.codex` unless `CODEX_DEV_LOOP_HOME` relocates it. If configuration is
 missing or lacks `ci_quota_policy`, run `scripts/configure_dev_loop.py`; it asks
-for automation level, source types, quality profile, test retry limit, and what
+for automation level, source types, quality profile, per-issue test retry limit, and what
 to do when GitHub CI quota is exhausted. Present these choices in order:
 
 1. `local_fallback`: current agent runs equivalent tests locally and continues;
@@ -120,10 +121,10 @@ For a red-mode unit:
 
 ```bash
 python <skill-dir>/scripts/dev_loop_harness.py --root .codex/dev-loop run-test \
-  --unit dev-001 --stage red --expected-failure "<missing behavior>" \
+  --unit dev-001 --issue login-error --stage red --expected-failure "<missing behavior>" \
   --command "<test command>"
 python <skill-dir>/scripts/dev_loop_harness.py --root .codex/dev-loop run-test \
-  --unit dev-001 --command "<test command>"
+  --unit dev-001 --issue login-error --command "<test command>"
 ```
 
 The red failure must prove the intended missing behavior, not import, syntax,
@@ -135,6 +136,27 @@ git worktrees and fresh `unit-implementer` agents. Agents run tests and commit
 inside their worktrees but never write shared loop state; the orchestrator
 records returned red/green metadata serially. After merging, record a current
 `merge-integrator` pass before `verify-units`.
+
+## Issue Retry Budgets
+
+Use a stable `--issue <id>` on loop-mode `run-test` and `record-test` for each
+problem (for example, `login-error` or `GH-42`). The same ID shares one retry
+counter across units; different IDs have independent counters. Keep the same ID
+while addressing the same root cause; do not rotate IDs to evade the budget.
+If omitted, attempts use the existing per-unit counter for compatibility.
+
+A failure increments only its issue's counter; a pass resets only that counter.
+Other issues' failures or passes cannot reset it. Red-stage attempts do not
+count. `max_test_retries_per_unit` (legacy alias `test_failure_limit`) retains its
+config name and now applies to each selected issue. A limit of N allows N
+automatic retries after the first failure: 0 stops on the first failure; the
+default 3 stops on the fourth. `verify-units` retains each selected command's
+issue ID when repeating final-tree tests.
+
+`resolve-blocker` resets exhausted test counters only, retaining other issues'
+pending failure counts; older per-unit evidence and reset markers remain
+readable. Review-iteration and quality-fix-round limits are unchanged.
+Standalone `standalone-test` does not enforce a test retry ceiling.
 
 ## Spec Review And Quality
 

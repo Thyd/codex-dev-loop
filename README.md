@@ -1,7 +1,7 @@
 # Codex Dev Loop · 从需求到 PR 的自动开发 loop
 
 ![Skill](https://img.shields.io/badge/Skill-Codex%20%7C%20Claude%20Code-111111?style=flat-square)
-![Version](https://img.shields.io/badge/Version-v0.8.0-blue?style=flat-square)
+![Version](https://img.shields.io/badge/Version-v0.9.0-blue?style=flat-square)
 ![Quality Gate](https://img.shields.io/badge/Quality%20Gate-required-0A7CFF?style=flat-square)
 ![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-supported-2088FF?style=flat-square)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
@@ -52,9 +52,11 @@ python ~/.codex/skills/codex-dev-loop/scripts/dev_loop_harness.py --root .codex/
 python ~/.codex/skills/codex-dev-loop/scripts/dev_loop_harness.py --root .codex/dev-loop --workspace . migrate-evidence
 ```
 
+0.9.0 新增按 issue 独立计算的测试重试预算：`run-test` / `record-test --issue <稳定 ID>` 让不同问题分别计数，同一问题跨单元共用计数；未指定 ID 时兼容原有单元计数。默认允许 3 次重试，在该 issue 第 4 次连续失败时停止。详见[重试规则](references/full-loop-workflow.md#issue-retry-budgets)。配置 schema 保持 5，证据 schema 保持 1。
+
 0.8.0 新增 GitHub CI 额度不足处理策略：首次配置可选择由当前 agent 在本地补测后继续，或保留进度、待用户付费恢复额度后继续原 CI 流程。选择会持久保存；旧配置升级只补问缺失项。配置 schema 升级为 5，证据 schema 仍为 1；保留 0.7.1 的自适应验证范围。
 
-初次使用前，运行 4 问配置：
+初次使用前，运行 5 问配置：
 
 ```bash
 python ~/.codex/skills/codex-dev-loop/scripts/configure_dev_loop.py
@@ -258,7 +260,7 @@ python "$env:USERPROFILE\.codex\skills\codex-dev-loop\scripts\configure_dev_loop
 | 你希望自动化到哪一步？ | 创建 PR 后停止 | 决定是否只规划、只提交，还是开 PR 后停止 |
 | 需求来源主要是什么？ | Markdown + Notion | 决定允许从哪些来源读取需求 |
 | 质量门严格度选哪种？ | 标准 | 决定强制哪些本地质量门和云端检查 |
-| 测试失败允许自动修复几次？ | 3 次 | 同一测试门连续失败超过重试次数后停止；通过一次即重置计数 |
+| 每个 issue 的测试失败允许自动修复几次？ | 3 次 | 每个 issue 独立计数，第 4 次连续失败停止；仅该 issue 通过才重置其计数 |
 | GitHub CI 额度不足时怎么办？ | 等待付费恢复 | ① 降级为本地由当前 agent 补做测试；② 待用户付费后按原计划继续 |
 
 配置会写入：
@@ -268,6 +270,8 @@ python "$env:USERPROFILE\.codex\skills\codex-dev-loop\scripts\configure_dev_loop
 ```
 
 harness 会执行这些配置：不允许的来源类型会在 `init --source-type ...` 阶段被拒绝；`planning_only` 和 `commit_only` 会在各自完成点停止。
+
+测试命令用 `--issue login-error` 等稳定 ID 标识问题；同一根因保持相同 ID，不得换 ID 绕过上限。红测试不计数，其他 issue 的通过或失败不影响当前计数。`resolve-blocker` 仅重置已耗尽预算的测试计数，`verify-units` 保留所选 issue。配置键 `max_test_retries_per_unit` 和兼容别名 `test_failure_limit` 保留；评审次数、质量修复轮数及独立 `standalone-test` 行为不变。
 
 `ci_quota_policy` 持久保存为 `local_fallback` 或 `wait_for_payment`，后续开发复用。只有经 GitHub 证据确认的额度/计费失败才适用：选择本地时，当前 agent 补做对应检查并记录日志；选择等待时，保留进度，额度恢复后重跑 CI。旧配置未选择时保持等待，并在配置向导补问。普通代码、凭证或服务配置错误仍停止。详见[额度处理与恢复命令](references/github-actions-cloud.md#quota-policy)。
 
@@ -351,7 +355,8 @@ python <skill-dir>/scripts/configure_dev_loop.py --non-interactive --ci-quota-po
 - 澄清闸门：`source.md` 的 Goal 和验收标准非空才允许进入规划；不清楚就留在 intake 阶段提问。
 - 规划评审闸门：技术方案、测试计划、风险分析、规格 delta 必须通过 Subagent 评审。
 - TDD 闸门：`- TDD: red` 单元没有失败的红测试证据，绿测试不予记录；无新增可执行行为时可用 `regression-only` 记录现有测试或直接资产/契约检查，但必须写进计划并由 plan-reviewer 审批。
-- 验证闸门：每个开发单元都要运行计划中与影响面匹配的检查，结果写入记录；worktree 内的证据只是过程证据，合并后必须 `verify-units` 用各单元已选命令对最终代码树复验。
+- 验证闸门：每个开发单元都要运行计划中与影响面匹配的检查，结果写入记录；worktree 内的证据只是过程证据，合并后必须 `verify-units` 用各单元已选命令及 issue ID 对最终代码树复验。
+- 测试重试闸门：不同 issue 分别计算失败次数；同一 issue 默认允许 3 次重试，第 4 次连续失败停止；不指定 `--issue` 时保留单元计数。
 - 规格闸门：`record-spec-merge` 比较完整的 ADDED/MODIFIED requirement 正文、拒绝重复标题，并确认 REMOVED 标题消失。
 - 规模护栏：small 档跳过 risk_review 前，harness 检查变更集是否触及依赖清单、迁移、SQL、CI/CD、Docker、密钥或 auth/security 路径，命中即拒绝跳过。
 - 质量闸门：调用 `ai-code-quality-gate`（未安装时用内置 fallback），已配置 profile gate 类别始终强制执行；`run-quality --require` 只能追加 gate，`--command "test=<命令>"` 可按已评审的影响面收窄测试命令。
@@ -529,6 +534,8 @@ python ~/.codex/skills/codex-dev-loop/scripts/dev_loop_harness.py --root .codex/
 python ~/.codex/skills/codex-dev-loop/scripts/dev_loop_harness.py --root .codex/dev-loop --workspace . migrate-evidence
 ```
 
+Version 0.9.0 adds independent test retry budgets per issue: `run-test` / `record-test --issue <stable-id>` isolates unrelated problems and shares the same issue counter across units. Omitting the ID preserves per-unit behavior. The default allows 3 retries and stops on that issue's fourth consecutive failure. See [issue retry rules](references/full-loop-workflow.md#issue-retry-budgets). Config schema stays at 5 and evidence schema stays at 1.
+
 Version 0.8.0 adds a persisted GitHub CI quota policy: the current agent can run equivalent checks locally, or retain progress until payment restores quota and resume the original CI plan. Setup upgrades ask only for missing preferences. Config schema advances to 5, evidence schema stays at 1, and the adaptive validation scopes from 0.7.1 remain available.
 
 Before the first run, configure the five core preferences:
@@ -619,7 +626,7 @@ Bad fit:
 | Planning | Produce design, file scope, test plan, risk analysis, spec delta, and development plan | Stop on architecture risk |
 | Subagent review | Cross-check requirements, plan, implementation approach, and risk | Revise and review again |
 | TDD implementation | Record failing red evidence, then implement to green; independent units in parallel worktrees | Green runs are refused without red evidence; worktree merges require `merge-integrator` before `verify-units` |
-| Validation gate | Run the smallest credible checks for each unit; use the full suite only when impact, risk, policy, or the user requires it | Stop after `max_test_retries_per_unit` |
+| Validation gate | Run the smallest credible checks for each unit; use the full suite only when impact, risk, policy, or the user requires it | Stop when an issue exhausts `max_test_retries_per_unit` retries (default: fourth failure) |
 | Budget/time-box | Track planned units, changed files, diff lines, review iterations, and quality fix rounds | Stop and report when a configured budget is reached |
 | Spec consolidation | Merge the spec delta into `specs/` and validate mechanically | Reviews blocked until baseline matches the delta |
 | Docs impact review | Check README, docs/, API reference, changelog, examples, env/config docs, migration notes, and user-facing copy | Quality gate blocked until `docs-impact-reviewer` returns `no-docs-needed` |
@@ -712,7 +719,7 @@ It asks five core questions; reruns preserve existing answers and ask only for m
 | How far should automation go? | Stop after PR creation | Controls planning-only, commit-only, or PR flow |
 | What source types do you use? | Markdown + Notion | Controls allowed requirement sources |
 | How strict should quality gates be? | Standard | Controls required local and cloud gates |
-| How many failed test attempts are allowed? | 3 | Controls when the loop stops on repeated test failures |
+| How many test retries are allowed per issue? | 3 | Each issue has its own counter; stop on its fourth consecutive failure, and reset only when that issue passes |
 | What if GitHub CI quota is exhausted? | Wait for payment | 1. Current agent runs equivalent tests locally; 2. Resume original CI after payment restores quota |
 
 The config is written to:
@@ -722,6 +729,8 @@ The config is written to:
 ```
 
 The harness enforces these preferences: disabled source types are rejected during `init --source-type ...`, and `planning_only` / `commit_only` stop at their configured completion points. Advanced JSON keys also set budget/time-box limits: `max_units` (8), `max_files_changed` (20), `max_test_retries_per_unit` (3), `max_review_iterations` (3), `max_quality_fix_rounds` (2), and `max_diff_lines` (1200).
+
+Use a stable ID such as `--issue login-error` for each problem; keep it for the same root cause across units and never rotate IDs to evade the limit. Red attempts are excluded. Other issues' passes and failures do not affect its counter. `resolve-blocker` resets only exhausted test counters, and `verify-units` retains the selected issue. Config names `max_test_retries_per_unit` and legacy alias `test_failure_limit` remain supported. Review iterations, quality fix rounds, and standalone `standalone-test` behavior are unchanged.
 
 `ci_quota_policy` persists as `local_fallback` or `wait_for_payment`. Verified GitHub quota/billing failures either run equivalent local checks through the current agent or retain progress until quota is restored. Legacy configs without a choice wait safely and are prompted during setup. Code, credential, and service-configuration failures remain blockers. See [quota handling and recovery](references/github-actions-cloud.md#quota-policy).
 
@@ -781,8 +790,8 @@ The loop does not rely on a Git `pre-commit` hook. Its hooks are harness-enforce
 - Scope-drift gate: every unit green, worktree green record, pre-spec-merge, and pre-quality/commit path runs scope-check against `technical-design.md` / `development-plan.md`; undeclared files, sensitive paths, dependency manifests, or broad formatting noise block progress.
 - Planning review gate (now including the spec delta).
 - TDD gate: `- TDD: red` units need recorded failing red evidence before green counts; when no executable behavior is added, `regression-only` may record existing tests or a direct artifact/contract check, but the waiver must be in the plan and approved by plan review.
-- Impact-matched validation gate; worktree evidence is interim, `merge-integrator` must pass on the merged tree, and `verify-units` must repeat each unit's selected command.
-- Budget/time-box gate: `max_units`, `max_files_changed`, `max_diff_lines`, `max_review_iterations`, `max_quality_fix_rounds`, and `max_test_retries_per_unit` stop the loop with a blocker when reached.
+- Impact-matched validation gate; worktree evidence is interim, `merge-integrator` must pass on the merged tree, and `verify-units` must repeat each unit's selected command and issue ID.
+- Budget/time-box gate: `max_units`, `max_files_changed`, `max_diff_lines`, `max_review_iterations`, and `max_quality_fix_rounds` keep their existing limits. `max_test_retries_per_unit` allows N test retries per selected issue and blocks on failure N+1; omitting `--issue` preserves per-unit counters.
 - Docs impact gate: quality is refused until `docs-impact-reviewer` returns `no-docs-needed`; `docs-needed` means update the named docs and rerun the review.
 - Spec gate: `record-spec-merge` compares complete normalized ADDED/MODIFIED requirement blocks, rejects duplicate titles, and confirms REMOVED titles are gone.
 - Scale guard: the small-scale `risk_review` skip is refused when the change set touches dependency manifests, migrations, SQL, CI/CD, Docker, keys, or auth/security paths.

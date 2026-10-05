@@ -35,7 +35,7 @@ Green stage rules:
 
 ## Serial Mode
 
-Work through units in dependency order with `$automated-dev-executor`, one at a time, using `run-test --stage red --expected-failure "<intended missing behavior>"` then `run-test` in the main workspace.
+Work through units in dependency order with `$automated-dev-executor`, one at a time, using `run-test --issue <stable-id> --stage red --expected-failure "<intended missing behavior>"` then `run-test --issue <stable-id>` in the main workspace. Apply the [issue retry budget rules](full-loop-workflow.md#issue-retry-budgets).
 
 ## Parallel Mode (independent units only)
 
@@ -54,7 +54,7 @@ git worktree add ../wt-dev-002 -b <loop-branch>-dev-002
 4. After each unit finishes: record its evidence, merge the unit branch back into the loop branch, resolve conflicts, remove the worktree (`git worktree remove ../wt-dev-002`).
 5. After ALL unit branches and spec baseline changes are merged, run and record `merge-integrator` against the current merged tree.
 6. Run `verify-units` in the main workspace. It repeats each unit's selected
-   command, not an implicit full suite. Worktree evidence is interim: its
+   command with its recorded issue ID, not an implicit full suite. Worktree evidence is interim: its
    workspace fingerprint will not match the merged tree, and the harness
    refuses `verify-units` until the merge-integrator review passes.
 
@@ -67,8 +67,8 @@ python <skill-dir>/scripts/dev_loop_harness.py --root .codex/dev-loop scope-chec
 Record worktree evidence with:
 
 ```bash
-python <skill-dir>/scripts/dev_loop_harness.py --root .codex/dev-loop record-test --unit dev-002 --stage red --expected-failure "<intended missing behavior>" --meta <meta.json> --worktree ../wt-dev-002
-python <skill-dir>/scripts/dev_loop_harness.py --root .codex/dev-loop record-test --unit dev-002 --meta <meta.json> --worktree ../wt-dev-002
+python <skill-dir>/scripts/dev_loop_harness.py --root .codex/dev-loop record-test --unit dev-002 --issue login-error --stage red --expected-failure "<intended missing behavior>" --meta <meta.json> --worktree ../wt-dev-002
+python <skill-dir>/scripts/dev_loop_harness.py --root .codex/dev-loop record-test --unit dev-002 --issue login-error --meta <meta.json> --worktree ../wt-dev-002
 ```
 
 The harness only accepts linked worktrees of the main workspace (created with `git worktree add`).
@@ -97,6 +97,7 @@ You are the unit-implementer for development unit <unit-id> in an autonomous dev
 
 Worktree: <absolute worktree path> (work ONLY here; never touch the main workspace or .codex/dev-loop)
 Unit objective, scope, acceptance, and test gate: <paste the unit block from development-plan.md>
+Issue ID and remaining retry budget: <stable issue ID and available retries>
 Relevant design excerpt: <paste the minimal technical-design context>
 
 Steps:
@@ -110,6 +111,7 @@ Steps:
 Unit: <unit-id>
 Red Meta: <path from AUTODEV_TEST_META of the failing run>
 Green Meta: <path from AUTODEV_TEST_META of the passing run>
+Issue: <stable issue ID; include every failed green-stage metadata path>
 Commit: <sha>
 Notes:
 - <surprises, scope deviations, or follow-ups; "none" otherwise>
@@ -124,6 +126,6 @@ Use the `automated-dev-executor` test gate script when installed; otherwise use 
 
 ## Failure Handling
 
-- A unit-implementer that cannot make its red test fail, or cannot reach green inside the retry budget, reports back; the orchestrator records the failing attempts (they count toward the shared limit) and stops with a blocker if the limit is exceeded.
+- A unit-implementer that cannot make its red test fail, or cannot reach green inside the issue retry budget, reports back. The orchestrator records every green-stage failure under its stable issue ID; only the same issue shares a counter across units. Unrelated issues have independent budgets, and red attempts are excluded. Stop with a blocker when an issue exhausts its retries. Never rename the same problem to gain more retries.
 - Merge conflicts between unit branches are resolved by the orchestrator in the main workspace; `merge-integrator` checks cross-unit interaction risk before `verify-units` catches runnable regressions.
 
