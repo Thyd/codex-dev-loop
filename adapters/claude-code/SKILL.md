@@ -5,7 +5,7 @@ description: Run an end-to-end autonomous development loop on Claude Code from a
 
 # Codex Dev Loop — Claude Code Adapter
 
-Current version: 0.8.0
+Current version: 0.9.0
 
 This adapter runs the same harness-enforced loop as the root [SKILL.md](../../SKILL.md), mapped to Claude Code. The state machine, gates, fingerprints, artifacts, and stop conditions are identical; only the agent-specific mechanics differ. Read the root SKILL.md sections for anything not restated here — this file only overrides what is Claude-specific. Before resuming 0.5.x evidence, run `doctor`; preview and run `migrate-evidence` when required.
 
@@ -39,6 +39,14 @@ CODEX_DEV_LOOP_HOME=~/.claude python ~/.claude/skills/codex-dev-loop/scripts/dev
 ```
 
 (The `.codex/dev-loop` record directory name is part of the harness contract and stays the same on every agent.)
+
+## Issue Retry Budgets
+
+Use `run-test --issue <stable-id>` and `record-test --issue <stable-id>` with the
+same [issue retry rules](../../references/full-loop-workflow.md#issue-retry-budgets)
+as Codex. Independent issues do not consume or reset each other's test retries;
+the same issue keeps its counter across units. Without `--issue`, the existing
+per-unit behavior remains. Review and quality limits are unchanged.
 
 ## Subagent Prompts
 

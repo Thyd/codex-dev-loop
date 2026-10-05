@@ -67,10 +67,10 @@ QUESTIONS = {
         ],
     },
     "test_failure_limit": {
-        "prompt": "4. 测试失败允许自动修复几次？",
+        "prompt": "4. 每个 issue 的测试失败允许自动修复几次？",
         "default": "3",
         "options": [
-            ("3", "3 次", "默认值，给自动修复留出空间。"),
+            ("3", "3 次", "每个 issue 独立计数；同一 issue 第 4 次失败时停止。"),
             ("2", "2 次", "更快停止。"),
             ("1", "1 次", "非常保守。"),
             ("0", "失败就停止", "第一次失败就停下询问。"),
@@ -201,7 +201,8 @@ def print_summary(config: dict, output: Path) -> None:
     print(f"- 质量门严格度：{LABELS['quality_profile'][config['quality_profile']]}")
     limit = config["test_failure_limit"]
     limit_label = "失败就停止" if limit == 0 else f"{limit} 次"
-    print(f"- 测试失败自动修复次数：{limit_label}")
+    print(f"- 每个 issue 的测试失败自动修复次数：{limit_label}")
+    print("  完整 loop 使用 --issue 标识具体问题；省略时兼容旧版，按开发单元计数。")
     print(f"- CI 额度不足时：{LABELS['ci_quota_policy'][config['ci_quota_policy']]}")
     print("- 高风险处理方式：架构、安全、数据、凭证与质量门风险始终停止并询问")
     print()

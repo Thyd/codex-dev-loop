@@ -14,6 +14,12 @@ import subprocess
 import sys
 from urllib.parse import urlparse
 from .contracts import CORE_VERSION, EVIDENCE_SCHEMA_VERSION
+from .issue_failures import (
+    issue_failure_count,
+    next_attempt_sequence,
+    normalize_issue,
+    reset_exhausted_issues,
+)
 from .evidence import (
     EvidenceContractError,
     load_evidence_document,
@@ -288,7 +294,9 @@ def record_test_meta(
     run_cwd: Path | None = None,
     worktree: str = "",
     expected_failure: str = "",
+    issue: str | None = None,
 ) -> int:
+    issue = normalize_issue(issue)
     run_cwd = run_cwd or workspace
     meta = load_test_meta(meta_path, unit, run_cwd)
     attempts = state.setdefault("test_attempts", {}).setdefault(unit, [])
@@ -302,7 +310,10 @@ def record_test_meta(
         "plan_fingerprint": plan_fingerprint(root),
         "workspace_fingerprint": workspace_fingerprint(run_cwd),
         "recorded_at": now(),
+        "attempt_sequence": next_attempt_sequence(state),
     }
+    if issue is not None:
+        record["issue_id"] = issue
     if worktree:
         record["worktree"] = worktree
     if stage == "red":
@@ -325,31 +336,19 @@ def record_test_meta(
         print(f"{unit}: red evidence recorded (attempt {len(attempts)}; red-test-validator pass)")
         return 0
     attempts.append(record)
-    # test_failure_limit is the number of automatic retries allowed after a
-    # failure: 0 blocks on the first failure, 3 blocks on the fourth
-    # consecutive failure. Counting is consecutive (a pass resets it), skips
-    # red-stage evidence runs, and also resets when a blocker is explicitly
-    # resolved, so an early stumble does not count against a later,
-    # unrelated regression.
-    reset_marker = state.get("failure_counter_reset_at", "")
-    consecutive_failures = 0
-    for item in reversed(attempts):
-        if attempt_stage(item) == "red":
-            continue
-        if item.get("status") == "passed":
-            break
-        if reset_marker and item.get("recorded_at", "") <= reset_marker:
-            break
-        consecutive_failures += 1
+    # N automatic retries means the (N + 1)th failure blocks. Other issues'
+    # outcomes and all red-stage evidence leave this issue's count unchanged.
+    consecutive_failures = issue_failure_count(state, unit, issue)
     configured_limit = loop_config(state)["max_test_retries_per_unit"]
     stop_after = configured_limit + 1
     if consecutive_failures >= stop_after and meta["status"] != "passed":
+        subject = f"issue {issue!r} ({unit})" if issue is not None else unit
         add_blocker(
             state,
-            f"{unit} test gate failed {consecutive_failures} consecutive time(s); configured retry limit is {configured_limit}",
+            f"{subject} test gate failed {consecutive_failures} consecutive time(s); configured retry limit is {configured_limit}",
         )
         write_state(root, state)
-        print(f"{unit}: failed {consecutive_failures} consecutive time(s)")
+        print(f"{subject}: failed {consecutive_failures} consecutive time(s)")
         return 1
     if meta["status"] == "passed" and not run_scope_check_hook(root, workspace, state, f"{unit} green", run_cwd=run_cwd):
         write_state(root, state)
@@ -412,7 +411,9 @@ def run_test_gate(
     timeout: int,
     script: Path,
     expected_failure: str = "",
+    issue: str | None = None,
 ) -> int:
+    issue = normalize_issue(issue)
     if stage == "green":
         assert_green_stage_allowed(root, state, unit)
     command = [
@@ -432,7 +433,7 @@ def run_test_gate(
     meta = parse_key_value_output(result.stdout, "AUTODEV_TEST_META")
     if not meta:
         raise SystemExit("Test gate did not report AUTODEV_TEST_META.")
-    return record_test_meta(root, workspace, state, unit, Path(meta), stage=stage, expected_failure=expected_failure)
+    return record_test_meta(root, workspace, state, unit, Path(meta), stage=stage, expected_failure=expected_failure, issue=issue)
 
 
 def cmd_run_test(args: argparse.Namespace) -> int:
@@ -444,7 +445,7 @@ def cmd_run_test(args: argparse.Namespace) -> int:
     if args.stage not in TEST_STAGES:
         raise SystemExit(f"Unknown test stage: {args.stage!r}; use red or green.")
     script = resolve_test_gate_script(loop_config(state), args.test_gate_script)
-    return run_test_gate(root, workspace, state, args.unit, args.command, args.stage, args.timeout, script, expected_failure=args.expected_failure)
+    return run_test_gate(root, workspace, state, args.unit, args.command, args.stage, args.timeout, script, expected_failure=args.expected_failure, issue=getattr(args, "issue", None))
 
 
 def is_linked_worktree(workspace: Path, candidate: Path) -> bool:
@@ -492,6 +493,7 @@ def cmd_record_test(args: argparse.Namespace) -> int:
         run_cwd=worktree,
         worktree=str(worktree),
         expected_failure=args.expected_failure,
+        issue=getattr(args, "issue", None),
     )
 
 
@@ -510,12 +512,12 @@ def cmd_verify_units(args: argparse.Namespace) -> int:
         raise SystemExit("development-plan.md has no '## Unit dev-*' sections to verify.")
     if has_worktree_evidence(state) and not review_is_current(state, MERGE_INTEGRATOR_ROLE, root, workspace):
         raise SystemExit("Cannot verify merged worktree units before merge-integrator passes for the current merged tree.")
-    commands: dict[str, str] = {}
+    commands: dict[str, dict] = {}
     missing: list[str] = []
     for unit in units:
         attempts = state.get("test_attempts", {}).get(unit, [])
-        green_commands = [item.get("command") for item in attempts if attempt_stage(item) == "green" and item.get("command")]
-        any_commands = [item.get("command") for item in attempts if item.get("command")]
+        green_commands = [item for item in attempts if attempt_stage(item) == "green" and item.get("command")]
+        any_commands = [item for item in attempts if item.get("command")]
         if green_commands:
             commands[unit] = green_commands[-1]
         elif any_commands:
@@ -529,7 +531,8 @@ def cmd_verify_units(args: argparse.Namespace) -> int:
     script = resolve_test_gate_script(loop_config(state), "")
     for unit in units:
         state = read_state(root)
-        outcome = run_test_gate(root, workspace, state, unit, commands[unit], "green", args.timeout, script)
+        selected = commands[unit]
+        outcome = run_test_gate(root, workspace, state, unit, selected["command"], "green", args.timeout, script, issue=selected.get("issue_id"))
         if outcome != 0:
             print(f"verify-units stopped at {unit}.")
             return outcome
@@ -971,9 +974,9 @@ def cmd_resolve_blocker(args: argparse.Namespace) -> int:
         raise SystemExit("--reason must describe how the blocker was addressed (at least 10 characters).")
     resolved_at = now()
     resolutions = state.setdefault("blocker_resolutions", [])
-    resolutions.append({"blockers": list(blockers), "reason": reason, "resolved_at": resolved_at})
+    reset_issues = reset_exhausted_issues(state, loop_config(state)["max_test_retries_per_unit"])
+    resolutions.append({"blockers": list(blockers), "reason": reason, "resolved_at": resolved_at, "test_failure_scopes_reset": reset_issues})
     state["blockers"] = []
-    state["failure_counter_reset_at"] = resolved_at
     resolution_log = root / "blocker-resolutions.md"
     if not resolution_log.exists():
         resolution_log.write_text("# Blocker Resolutions\n", encoding="utf-8")

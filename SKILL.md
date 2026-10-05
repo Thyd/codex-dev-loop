@@ -5,7 +5,7 @@ description: Run an end-to-end, evidence-gated development loop for standard, mu
 
 # Codex Dev Loop
 
-Current version: 0.8.0
+Current version: 0.9.0
 
 ## Operating Contract
 
@@ -24,6 +24,9 @@ fingerprint, scope, budget, evidence, and transition checks as authoritative.
 - Implement independently testable units test-first. A valid failing red run
   must precede green unless the reviewed plan explicitly allows
   `regression-only`.
+- Track test retries independently by stable issue ID: pass `--issue <id>` to
+  `run-test` / `record-test`; keep the same ID for the same problem across units.
+  See [issue retry budgets](references/full-loop-workflow.md#issue-retry-budgets).
 - Keep tests, spec merge, reviews, quality, commit, PR, and cloud evidence bound
   to current plan/workspace fingerprints; changed inputs invalidate old passes.
 - Stop at ambiguity, hard risk, exhausted budgets, missing credentials, or a

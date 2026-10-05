@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.9.0 - 2026-10-05
+
+### Added
+
+- Added optional stable `--issue` IDs to loop-mode `run-test` and `record-test`. Each issue has an independent test retry counter; the same ID shares its counter across development units.
+
+### Changed
+
+- Test failures and passes affect only their own issue counter. Unrelated issues cannot consume or reset that budget; red-stage attempts remain excluded. A limit of N permits N retries after the first failure, so the default of 3 stops on the fourth failure for that issue.
+- `resolve-blocker` resets exhausted test counters only, preserving pending counts for other issues. `verify-units` retains the selected issue ID during final-tree re-verification.
+- Updated setup wording, main and focused skills, Claude Code adapter, and bilingual guidance to use stable issue IDs without rotating IDs to bypass a retry budget.
+
+### Fixed
+
+- Made the process-cleanup regression test release its child only after cleanup returns, so Windows cleanup latency is not mistaken for an orphan process.
+
+### Compatibility
+
+- Omitting `--issue` preserves per-unit counters. Existing evidence and reset markers remain readable. Config keys `max_test_retries_per_unit` and `test_failure_limit` retain their names; config schema stays at 5 and evidence schema stays at 1.
+- Review-iteration and quality-fix-round budgets are unchanged. Standalone `standalone-test` gains no new retry ceiling.
+
 ## 0.8.0 - 2026-09-13
 
 ### Added

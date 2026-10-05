@@ -9,7 +9,7 @@ description: Fix a bug or add a small piece of behavior test-first, enforcing a 
 
 约定：`<core>` = codex-dev-loop 主 skill 目录下的 `scripts/dev_loop_harness.py`。
 
-开始前运行 `python <core> version --require 0.8.0`；版本不足或核心缺失时停止并更新主 skill。
+开始前运行 `python <core> version --require 0.9.0`；版本不足或核心缺失时停止并更新主 skill。
 
 ## 何时用 / 何时不用
 
@@ -31,11 +31,13 @@ python <core> guard-check
 
 用一个稳定的 `--label` 标识被测行为（如 `login-401-msg`）。
 
-1. **红**：先写会失败的测试，记录红证据（红运行**不计入**失败上限；红却通过会被判定为「测试没证明缺失行为」，需加强测试）：
+1. **红**：先写会失败的测试，记录红证据（红却通过会被判定为「测试没证明缺失行为」，需加强测试）：
 
 ```bash
 python <core> standalone-test --label <label> --stage red --expected-failure "<intended missing behavior>" --command "<failing test command>"
 ```
+
+独立 `standalone-test` 不强制测试重试上限。完整 loop 用 `run-test` / `record-test --issue <稳定 ID>` 按 issue 独立计数，红测试不计数；详见[重试规则](../../references/full-loop-workflow.md#issue-retry-budgets)。
 
 Red failures pass through red-test-validator first; import, syntax, dependency, path, environment, and ambiguous snapshot failures do not unlock green.
 
